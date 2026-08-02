@@ -1,0 +1,21 @@
+# Embedded USAHP broker config for the Tauri demo.
+# Mirrors usahp/example.toml minus the stdin simulator (no terminal in a GUI).
+# NOTE: keyboard mappings are grabbed + suppressed system-wide by rdev when the
+# app holds the OS input permission (Accessibility on macOS). Until then the
+# grab is inert and these keys pass through to the OS untouched.
+
+[server]
+port = 7312
+client_queue_capacity = 256
+
+[[mappings]]
+id = "space"
+switch_id = "switch_1"
+input = "keyboard"
+code = "Space"
+
+[[mappings]]
+id = "enter"
+switch_id = "switch_1"
+input = "keyboard"
+code = "Return"
