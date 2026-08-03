@@ -5,6 +5,8 @@
 // Tauri's async runtime. One process, one language: the webview loads
 // scan-engine-lab; the Rust backend IS the switch daemon.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tauri::{Manager, State};
 use tokio::sync::mpsc;
 
@@ -19,6 +21,8 @@ struct AppState {
     broker: mpsc::Sender<usahp_daemon::broker::BrokerCommand>,
     port: u16,
     switches: Vec<String>,
+    /// Set when the macOS CGEventTap is installed; clear it to release capture.
+    capture_flag: Option<Arc<AtomicBool>>,
 }
 
 fn init_tracing() {
@@ -37,7 +41,27 @@ fn usahp_status(state: State<'_, AppState>) -> serde_json::Value {
         "running": true,
         "port": state.port,
         "switches": state.switches,
+        "capture_installed": state.capture_flag.is_some(),
+        "capturing": state
+            .capture_flag
+            .as_ref()
+            .map(|f| f.load(Ordering::Relaxed))
+            .unwrap_or(false),
     })
+}
+
+/// Pause/resume the OS-level switch capture (so the user can free their keys
+/// without quitting). No-op if the tap isn't installed.
+#[tauri::command]
+fn set_capture(state: State<'_, AppState>, enabled: bool) {
+    if let Some(flag) = state.capture_flag.as_ref() {
+        flag.store(enabled, Ordering::Relaxed);
+        tracing::info!(
+            enabled,
+            "USAHP capture {}",
+            if enabled { "resumed" } else { "released" }
+        );
+    }
 }
 
 /// Inject a switch edge into the embedded broker (used by on-screen buttons so
@@ -109,15 +133,12 @@ pub fn run() {
                 broker
             });
 
-            // The OS-level grab is OFF by default. rdev's macOS event-tap callback
-            // calls HIToolbox TextServices (TSMGetInputSourceProperty, to build key
-            // names) off the main thread, which traps with `_dispatch_assert_queue_fail`
-            // → SIGTRAP on the first captured key — uncatchable, kills the process.
-            // Capture instead happens in the webview (KeyboardAdapter → inject_switch)
-            // so keys still flow through the broker. Set USAHP_GRAB=1 to try the real
-            // grab (works on Linux/Windows; macOS needs an rdev fix or a usahp-side
-            // capture rewrite).
-            if std::env::var("USAHP_GRAB")
+            // OS-level switch capture is OFF by default (capture happens in the
+            // webview → inject_switch). Set USAHP_GRAB=1 for real system-wide
+            // capture: a native CGEventTap on macOS (rdev's grab traps in
+            // TextServices), or usahp's rdev/evdev on Linux/Windows. The flag
+            // returned here lets `set_capture` pause/resume the tap at runtime.
+            let capture_flag: Option<Arc<AtomicBool>> = if std::env::var("USAHP_GRAB")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false)
             {
@@ -125,29 +146,32 @@ pub fn run() {
                 // TextServices on the first key). Elsewhere use usahp's rdev/evdev.
                 #[cfg(target_os = "macos")]
                 {
-                    macos_capture::spawn(&config.mappings, broker.clone());
+                    macos_capture::spawn(&config.mappings, broker.clone())
                 }
                 #[cfg(not(target_os = "macos"))]
                 {
                     if let Err(error) = usahp_daemon::input::spawn(&config.mappings, broker.clone()) {
                         tracing::error!(%error, "USAHP input backend failed to start");
                     }
+                    None
                 }
             } else {
                 tracing::info!(
                     "USAHP OS grab disabled (set USAHP_GRAB=1 to enable). Capture is via the \
                      webview → inject_switch."
                 );
-            }
+                None
+            };
 
             app.manage(AppState {
                 broker,
                 port,
                 switches,
+                capture_flag,
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![usahp_status, inject_switch])
+        .invoke_handler(tauri::generate_handler![usahp_status, inject_switch, set_capture])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

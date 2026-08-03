@@ -65,8 +65,9 @@ const SWITCHES: { id: string; key: string; code: string; role: Role }[] = [
 ];
 
 const TAURI = (window as unknown as { __TAURI__?: { core?: { invoke: (cmd: string, args?: unknown) => Promise<unknown> } } }).__TAURI__;
-const inject = TAURI?.core?.invoke
-  ? (id: string, pressed: boolean) => TAURI.core.invoke('inject_switch', { switchId: id, pressed })
+const tauriInvoke = TAURI?.core?.invoke ?? null;
+const inject = tauriInvoke
+  ? (id: string, pressed: boolean) => tauriInvoke('inject_switch', { switchId: id, pressed })
   : null;
 
 class DemoApp {
@@ -81,6 +82,7 @@ class DemoApp {
   private adapter: UsahpAdapter | null = null;
   private keyboard: KeyboardAdapter | null = null;
   private disconnectBridge: (() => void) | null = null;
+  private capturing = false;
 
   constructor(host: HTMLElement) { this.host = host; }
 
@@ -95,7 +97,10 @@ class DemoApp {
     return `
       <header class="hd">
         <h1>USAHP Switch Scanner</h1>
-        <div class="status" data-status>starting…</div>
+        <div class="hd-right">
+          <button class="capture-btn" data-capture hidden>Pause capture</button>
+          <div class="status" data-status>starting…</div>
+        </div>
       </header>
       <main class="mn">
         <section class="preview">
@@ -123,6 +128,9 @@ class DemoApp {
           <fieldset><legend>Switches (routed through USAHP)</legend>
             <div class="switches" data-switches></div>
             <p class="hint">In Tauri these keys are grabbed by the broker; tap a button to inject the same way. Roles can be reassigned.</p>
+          </fieldset>
+          <fieldset><legend>Broker activity</legend>
+            <ul class="activity" data-activity></ul>
           </fieldset>
         </aside>
       </main>`;
@@ -292,8 +300,43 @@ class DemoApp {
       this.keyboard = new KeyboardAdapter(window, this.engine, keyMap, { preventDefaultOnBound: true });
     }
 
+    // Log switch activity flowing through the engine (broker-routed in Tauri).
+    this.engine.on('press', (e) => this.logActivity(e.switchId, 'press'));
+    this.engine.on('release', (e) => this.logActivity(e.switchId, 'release'));
+
     this.renderSwitchPanel();
-    this.setStatus(inject ? 'Tauri — webview capture → broker' : 'Browser — direct (no broker)');
+
+    // If the OS grab is installed, surface a pause/resume capture toggle.
+    const capBtn = this.host.querySelector('[data-capture]') as HTMLButtonElement | null;
+    if (tauriInvoke && capBtn) {
+      tauriInvoke('usahp_status').then((s) => {
+        const st = s as { capture_installed?: boolean; capturing?: boolean };
+        if (st.capture_installed) {
+          this.capturing = !!st.capturing;
+          capBtn.hidden = false;
+          capBtn.textContent = this.capturing ? 'Pause capture' : 'Resume capture';
+        }
+      });
+      capBtn.addEventListener('click', async () => {
+        const next = !this.capturing;
+        await tauriInvoke('set_capture', { enabled: next });
+        this.capturing = next;
+        capBtn.textContent = next ? 'Pause capture' : 'Resume capture';
+        this.setStatus(next ? 'capture resumed' : 'capture released — keys pass through');
+      });
+    }
+
+    this.setStatus(inject ? 'Tauri — broker routing' : 'Browser — direct (no broker)');
+  }
+
+  private logActivity(switchId: string, action: string) {
+    const list = this.host.querySelector('[data-activity]');
+    if (!list) return;
+    const li = document.createElement('li');
+    li.textContent = `${switchId} · ${action}`;
+    li.className = `act act-${action}`;
+    list.prepend(li);
+    while (list.children.length > 8) list.removeChild(list.lastChild!);
   }
 
   private reconnectBindings() {
@@ -350,7 +393,10 @@ const style = document.createElement('style');
 style.textContent = `
   .hd { display:flex; justify-content:space-between; align-items:center; padding:12px 20px; background:#222; color:#fff; }
   .hd h1 { font-size:1.1rem; margin:0; font-weight:600; }
+  .hd-right { display:flex; align-items:center; gap:10px; }
   .status { font-size:.8rem; opacity:.85; }
+  .capture-btn { font-size:.78rem; padding:4px 10px; border:1px solid #555; border-radius:6px; background:#333; color:#fff; cursor:pointer; }
+  .capture-btn:hover { background:#444; }
   .mn { display:grid; grid-template-columns: 1fr 320px; gap:16px; padding:16px; }
   .preview { background:#fff; border-radius:10px; padding:16px; }
   .grid { display:grid; grid-template-columns: repeat(4, 1fr); gap:8px; min-height:300px; }
@@ -373,6 +419,10 @@ style.textContent = `
   .sw button { padding:6px 10px; border:1px solid #ccc; border-radius:6px; background:#fafafa; cursor:pointer; }
   .sw button:active { background:#ff9800; color:#fff; }
   .hint { font-size:.72rem; color:#999; margin:.4em 0 0; line-height:1.3; }
+  .activity { list-style:none; margin:0; padding:0; max-height:130px; overflow:auto; font-family:monospace; font-size:.72rem; }
+  .activity li { padding:2px 0; color:#888; border-bottom:1px solid #f2f2f2; }
+  .act-press { color:#2196f3; }
+  .act-release { color:#999; }
   @media (max-width: 800px) { .mn { grid-template-columns: 1fr; } }
 `;
 document.head.appendChild(style);

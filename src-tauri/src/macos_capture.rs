@@ -11,6 +11,7 @@
 #![cfg(target_os = "macos")]
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use core_foundation::runloop::CFRunLoop;
@@ -49,7 +50,10 @@ fn name_to_keycode() -> HashMap<&'static str, u16> {
 /// Install a session CGEventTap on a dedicated thread that turns the configured
 /// keyboard mappings into broker `Input` commands and suppresses the captured
 /// keys. Requires macOS Accessibility permission; logs + returns otherwise.
-pub fn spawn(mappings: &[Mapping], broker: mpsc::Sender<BrokerCommand>) {
+///
+/// Returns a flag the caller can clear to release capture (keys then pass
+/// through to the OS again). `None` if no tap was installed.
+pub fn spawn(mappings: &[Mapping], broker: mpsc::Sender<BrokerCommand>) -> Option<Arc<AtomicBool>> {
     let names = name_to_keycode();
     let mut by_key: HashMap<u16, Vec<String>> = HashMap::new();
     for m in mappings.iter().filter(|m| m.input == InputKind::Keyboard) {
@@ -59,15 +63,18 @@ pub fn spawn(mappings: &[Mapping], broker: mpsc::Sender<BrokerCommand>) {
     }
     if by_key.is_empty() {
         tracing::warn!("no capturable keyboard mappings; macOS tap not installed");
-        return;
+        return None;
     }
+    let capture = Arc::new(AtomicBool::new(true));
     let by_key = Arc::new(by_key);
+    let capture_for_cb = capture.clone();
 
     if let Err(error) = std::thread::Builder::new()
         .name("usahp-macos-tap".into())
         .spawn(move || {
             let broker = broker;
             let by_key = by_key;
+            let capture = capture_for_cb;
             tracing::info!(
                 "installing macOS CGEventTap for {} keycode(s) — needs Accessibility",
                 by_key.len()
@@ -80,6 +87,10 @@ pub fn spawn(mappings: &[Mapping], broker: mpsc::Sender<BrokerCommand>) {
                 CGEventTapOptions::Default,
                 vec![CGEventType::KeyDown, CGEventType::KeyUp],
                 move |_proxy, event_type, event| {
+                    // Capture released: pass everything through untouched.
+                    if !capture.load(Ordering::Relaxed) {
+                        return CallbackResult::Keep;
+                    }
                     let keycode = event.get_integer_value_field(KEYCODE_FIELD) as u16;
                     let action = match event_type {
                         CGEventType::KeyDown => Action::Pressed,
@@ -114,5 +125,7 @@ pub fn spawn(mappings: &[Mapping], broker: mpsc::Sender<BrokerCommand>) {
         })
     {
         tracing::error!(%error, "could not spawn macOS tap thread");
+        return None;
     }
+    Some(capture)
 }
