@@ -798,8 +798,21 @@ class DemoApp {
       label = this.focused ? '● App control' : '○ System';
       color = this.focused ? '#4caf50' : '#999';
     }
-    if (tauriInvoke) await tauriInvoke('set_capture', { enabled: effective });
     const ind = this.host.querySelector('[data-capture-state]') as HTMLElement | null;
+    if (tauriInvoke) {
+      try {
+        await tauriInvoke('set_capture', { enabled: effective });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.setStatus(`capture error: ${message}`);
+        if (ind) {
+          ind.hidden = false;
+          ind.textContent = 'Capture error';
+          ind.style.color = '#c62828';
+        }
+        return;
+      }
+    }
     if (ind) {
       ind.hidden = false;
       ind.textContent = label;

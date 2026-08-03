@@ -5,6 +5,7 @@
 // Tauri's async runtime. One process, one language: the webview loads
 // scan-engine-lab; the Rust backend IS the switch daemon.
 
+#[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{Emitter, Manager, State};
@@ -16,8 +17,9 @@ mod macos_capture;
 const EMBEDDED_CONFIG: &str = include_str!("../resources/default-config.toml");
 
 /// Output routing mode.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 enum OutputMode {
+    #[default]
     Disabled,
     /// switch_id → macOS/win keycode
     Keystroke(std::collections::HashMap<String, u16>),
@@ -26,20 +28,47 @@ enum OutputMode {
     Grid3,
 }
 
-impl Default for OutputMode {
-    fn default() -> Self {
-        Self::Disabled
+#[derive(Clone)]
+enum CaptureHandle {
+    Core(usahp_daemon::input::CaptureControl),
+    #[cfg(target_os = "macos")]
+    MacOs(Arc<AtomicBool>),
+}
+
+impl CaptureHandle {
+    fn enabled(&self) -> bool {
+        match self {
+            Self::Core(control) => control.enabled(),
+            #[cfg(target_os = "macos")]
+            Self::MacOs(flag) => flag.load(Ordering::Relaxed),
+        }
+    }
+
+    async fn set_enabled(&self, enabled: bool) -> Result<(), String> {
+        match self {
+            Self::Core(control) => if enabled {
+                control.resume().await
+            } else {
+                control.pause().await
+            }
+            .map_err(|error| error.to_string()),
+            #[cfg(target_os = "macos")]
+            Self::MacOs(flag) => {
+                flag.store(enabled, Ordering::Relaxed);
+                Ok(())
+            }
+        }
     }
 }
 
-/// Handle on the running broker so (later) commands can inject events.
+/// Handle on the running broker so commands can inspect and control it.
 struct AppState {
     #[allow(dead_code)]
     broker: mpsc::Sender<usahp_daemon::broker::BrokerCommand>,
     port: u16,
     switches: Vec<String>,
-    /// Set when the macOS CGEventTap is installed; clear it to release capture.
-    capture_flag: Option<Arc<AtomicBool>>,
+    /// Set when a platform capture backend is installed.
+    capture: Option<CaptureHandle>,
     /// Output routing state.
     output: Arc<std::sync::Mutex<OutputMode>>,
 }
@@ -56,39 +85,44 @@ fn init_tracing() {
 /// Frontend-facing snapshot of the embedded broker.
 #[tauri::command]
 fn usahp_status(state: State<'_, AppState>) -> serde_json::Value {
-    let output_active = state.output.lock().map(|m| !matches!(*m, OutputMode::Disabled)).unwrap_or(false);
-    let output_mode = state.output.lock().map(|m| match &*m {
-        OutputMode::Disabled => "disabled",
-        OutputMode::Keystroke(_) => "keystroke",
-        OutputMode::Grid3 => "grid3",
-    }).unwrap_or("disabled");
+    let output_active = state
+        .output
+        .lock()
+        .map(|m| !matches!(*m, OutputMode::Disabled))
+        .unwrap_or(false);
+    let output_mode = state
+        .output
+        .lock()
+        .map(|m| match &*m {
+            OutputMode::Disabled => "disabled",
+            OutputMode::Keystroke(_) => "keystroke",
+            OutputMode::Grid3 => "grid3",
+        })
+        .unwrap_or("disabled");
     serde_json::json!({
         "running": true,
         "port": state.port,
         "switches": state.switches,
-        "capture_installed": state.capture_flag.is_some(),
-        "capturing": state
-            .capture_flag
-            .as_ref()
-            .map(|f| f.load(Ordering::Relaxed))
-            .unwrap_or(false),
+        "capture_installed": state.capture.is_some(),
+        "capturing": state.capture.as_ref().map(CaptureHandle::enabled).unwrap_or(false),
         "output_active": output_active,
         "output_mode": output_mode,
     })
 }
 
-/// Pause/resume the OS-level switch capture (so the user can free their keys
-/// without quitting). No-op if the tap isn't installed.
+/// Pause/resume the OS-level switch capture so the user can free their keys
+/// without quitting. No-op when the app is running in webview-only mode.
 #[tauri::command]
-fn set_capture(state: State<'_, AppState>, enabled: bool) {
-    if let Some(flag) = state.capture_flag.as_ref() {
-        flag.store(enabled, Ordering::Relaxed);
+async fn set_capture(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    if let Some(capture) = state.capture.as_ref() {
+        capture.set_enabled(enabled).await?;
         tracing::info!(
             enabled,
             "USAHP capture {}",
             if enabled { "resumed" } else { "released" }
         );
     }
+    Ok(())
 }
 
 /// Configure output routing: translate broker switch events to external apps.
@@ -143,24 +177,27 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let config = usahp_core::Config::parse(EMBEDDED_CONFIG)
-                .expect("invalid embedded USAHP config");
+            let config =
+                usahp_core::Config::parse(EMBEDDED_CONFIG).expect("invalid embedded USAHP config");
             usahp_daemon::input::validate(&config.mappings)
                 .expect("invalid embedded USAHP mappings");
 
             let port = config.server.port;
             let capacity = config.server.client_queue_capacity;
-            let mut switches: Vec<String> =
-                config.mappings.iter().map(|m| m.switch_id.clone()).collect();
+            let mut switches: Vec<String> = config
+                .mappings
+                .iter()
+                .map(|m| m.switch_id.clone())
+                .collect();
             switches.sort();
             switches.dedup();
 
             // broker::spawn and server::serve call tokio::spawn internally, so
             // they need a current runtime — block_on enters it and still lets
             // us return the broker handle synchronously.
-            let broker = tauri::async_runtime::block_on(async {
+            let (broker, capture_control) = tauri::async_runtime::block_on(async {
                 let capture = usahp_daemon::input::CaptureControl::new_enabled();
-                let broker = usahp_daemon::broker::spawn(config.mappings.clone(), capture);
+                let broker = usahp_daemon::broker::spawn(config.mappings.clone(), capture.clone());
                 let server_broker = broker.clone();
                 tauri::async_runtime::spawn(async move {
                     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
@@ -170,22 +207,25 @@ pub fn run() {
                             return;
                         }
                     };
-                    tracing::info!("USAHP WebSocket server listening on http://127.0.0.1:{}", port);
+                    tracing::info!(
+                        "USAHP WebSocket server listening on http://127.0.0.1:{}",
+                        port
+                    );
                     if let Err(error) =
                         usahp_daemon::server::serve(listener, server_broker, capacity).await
                     {
                         tracing::error!(%error, "USAHP server ended");
                     }
                 });
-                broker
+                (broker, capture)
             });
 
             // OS-level switch capture is OFF by default (capture happens in the
             // webview → inject_switch). Set USAHP_GRAB=1 for real system-wide
             // capture: a native CGEventTap on macOS (rdev's grab traps in
             // TextServices), or usahp's rdev/evdev on Linux/Windows. The flag
-            // returned here lets `set_capture` pause/resume the tap at runtime.
-            let capture_flag: Option<Arc<AtomicBool>> = if std::env::var("USAHP_GRAB")
+            // returned here lets `set_capture` pause/resume the backend at runtime.
+            let capture: Option<CaptureHandle> = if std::env::var("USAHP_GRAB")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false)
             {
@@ -193,19 +233,22 @@ pub fn run() {
                 // TextServices on the first key). Elsewhere use usahp's rdev/evdev.
                 #[cfg(target_os = "macos")]
                 {
-                    macos_capture::spawn(&config.mappings, broker.clone())
+                    macos_capture::spawn(&config.mappings, broker.clone()).map(CaptureHandle::MacOs)
                 }
-    #[cfg(not(target_os = "macos"))]
-    {
-        if let Err(error) = usahp_daemon::input::spawn(
-            &config.mappings,
-            broker.clone(),
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-        ) {
-            tracing::error!(%error, "USAHP input backend failed to start");
-        }
-        None
-    }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    match usahp_daemon::input::spawn(
+                        &config.mappings,
+                        broker.clone(),
+                        capture_control.clone(),
+                    ) {
+                        Ok(()) => Some(CaptureHandle::Core(capture_control.clone())),
+                        Err(error) => {
+                            tracing::error!(%error, "USAHP input backend failed to start");
+                            None
+                        }
+                    }
+                }
             } else {
                 tracing::info!(
                     "USAHP OS grab disabled (set USAHP_GRAB=1 to enable). Capture is via the \
@@ -221,13 +264,11 @@ pub fn run() {
                 let mon_broker = broker.clone();
                 let mon_win = window.clone();
                 tauri::async_runtime::spawn(async move {
-                    let (tx, mut rx) = tokio::sync::mpsc::channel::<std::sync::Arc<usahp_core::ServerMessage>>(16);
+                    let (tx, mut rx) =
+                        tokio::sync::mpsc::channel::<std::sync::Arc<usahp_core::ServerMessage>>(16);
                     let (reply, result) = tokio::sync::oneshot::channel();
                     let _ = mon_broker
-                        .send(usahp_daemon::broker::BrokerCommand::Register {
-                            sender: tx,
-                            reply,
-                        })
+                        .send(usahp_daemon::broker::BrokerCommand::Register { sender: tx, reply })
                         .await;
                     let _ = result.await;
                     // Drain hello (we don't need it for monitoring).
@@ -235,16 +276,14 @@ pub fn run() {
                     while let Some(msg) = rx.recv().await {
                         match &*msg {
                             usahp_core::ServerMessage::HandshakeResponse(resp) => {
-                                let _ = mon_win.emit("usahp-session-event", format!(
-                                    "Handshake: {:?}",
-                                    resp
-                                ));
+                                let _ = mon_win
+                                    .emit("usahp-session-event", format!("Handshake: {:?}", resp));
                             }
                             usahp_core::ServerMessage::SessionRevoked(rev) => {
-                                let _ = mon_win.emit("usahp-session-event", format!(
-                                    "Session revoked: {:?}",
-                                    rev.reason
-                                ));
+                                let _ = mon_win.emit(
+                                    "usahp-session-event",
+                                    format!("Session revoked: {:?}", rev.reason),
+                                );
                             }
                             _ => {}
                         }
@@ -254,11 +293,13 @@ pub fn run() {
 
             // Output routing: a second broker client that translates switch_events
             // to OS-level keystrokes when output mapping is active.
-            let output: Arc<std::sync::Mutex<OutputMode>> = Arc::new(std::sync::Mutex::new(OutputMode::Disabled));
+            let output: Arc<std::sync::Mutex<OutputMode>> =
+                Arc::new(std::sync::Mutex::new(OutputMode::Disabled));
             let out_broker = broker.clone();
             let out_state = output.clone();
             tauri::async_runtime::spawn(async move {
-                let (tx, mut rx) = tokio::sync::mpsc::channel::<std::sync::Arc<usahp_core::ServerMessage>>(16);
+                let (tx, mut rx) =
+                    tokio::sync::mpsc::channel::<std::sync::Arc<usahp_core::ServerMessage>>(16);
                 let (reply, result) = tokio::sync::oneshot::channel();
                 let _ = out_broker
                     .send(usahp_daemon::broker::BrokerCommand::Register { sender: tx, reply })
@@ -272,11 +313,17 @@ pub fn run() {
                         if let Some(mode) = mode.as_deref() {
                             match mode {
                                 OutputMode::Keystroke(map) => {
-                                    if let Some(&keycode) = map.get(&ev.switch_id) {
+                                    if let Some(&_keycode) = map.get(&ev.switch_id) {
                                         #[cfg(target_os = "macos")]
-                                        { macos_capture::post_keystroke(keycode, is_press); }
+                                        {
+                                            macos_capture::post_keystroke(_keycode, is_press);
+                                        }
                                         #[cfg(not(target_os = "macos"))]
-                                        { tracing::warn!("keystroke output not yet on this platform"); }
+                                        {
+                                            tracing::warn!(
+                                                "keystroke output not yet on this platform"
+                                            );
+                                        }
                                     }
                                 }
                                 OutputMode::Grid3 => {
@@ -284,9 +331,14 @@ pub fn run() {
                                     if let Some(n) = ev.switch_id.strip_prefix("switch_") {
                                         if let Ok(switch_num) = n.parse::<u32>() {
                                             #[cfg(target_os = "windows")]
-                                            { grid3_send(switch_num, is_press); }
+                                            {
+                                                grid3_send(switch_num, is_press);
+                                            }
                                             #[cfg(not(target_os = "windows"))]
-                                            { let _ = switch_num; tracing::warn!("Grid 3 output is Windows-only"); }
+                                            {
+                                                let _ = switch_num;
+                                                tracing::warn!("Grid 3 output is Windows-only");
+                                            }
                                         }
                                     }
                                 }
@@ -301,7 +353,7 @@ pub fn run() {
                 broker,
                 port,
                 switches,
-                capture_flag,
+                capture,
                 output,
             });
 
@@ -319,7 +371,12 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![usahp_status, inject_switch, set_capture, set_output])
+        .invoke_handler(tauri::generate_handler![
+            usahp_status,
+            inject_switch,
+            set_capture,
+            set_output
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -330,19 +387,15 @@ pub fn run() {
 /// `press_flag` is 1 for press, 0 for release.
 #[cfg(target_os = "windows")]
 fn grid3_send(switch_num: u32, press: bool) {
+    use std::sync::OnceLock;
+    use windows::core::s;
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{
         RegisterWindowMessageA, SendNotifyMessageA, HWND_BROADCAST,
     };
-    use windows::core::PCSTR;
-    use windows::Win32::Foundation::{WPARAM, LPARAM};
-    use std::sync::OnceLock;
 
     static MSG: OnceLock<u32> = OnceLock::new();
-    let msg = *MSG.get_or_init(|| {
-        unsafe {
-            RegisterWindowMessageA(PCSTR(b"Sensory_SwitchInput\0".as_ptr())).0
-        }
-    });
+    let msg = *MSG.get_or_init(|| unsafe { RegisterWindowMessageA(s!("Sensory_SwitchInput")) });
     unsafe {
         let _ = SendNotifyMessageA(
             HWND_BROADCAST,
@@ -350,5 +403,21 @@ fn grid3_send(switch_num: u32, press: bool) {
             WPARAM(switch_num as usize),
             LPARAM(if press { 1 } else { 0 }),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CaptureHandle;
+
+    #[tokio::test]
+    async fn core_capture_handle_reports_pause_and_resume() {
+        let handle = CaptureHandle::Core(usahp_daemon::input::CaptureControl::new_enabled());
+
+        assert!(handle.enabled());
+        handle.set_enabled(false).await.expect("pause capture");
+        assert!(!handle.enabled());
+        handle.set_enabled(true).await.expect("resume capture");
+        assert!(handle.enabled());
     }
 }
