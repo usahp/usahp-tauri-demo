@@ -68,6 +68,10 @@ pub fn spawn(mappings: &[Mapping], broker: mpsc::Sender<BrokerCommand>) {
         .spawn(move || {
             let broker = broker;
             let by_key = by_key;
+            tracing::info!(
+                "installing macOS CGEventTap for {} keycode(s) — needs Accessibility",
+                by_key.len()
+            );
             // with_enabled creates the tap, enables it, runs `with_fn`
             // (the run loop) on this thread, and drops the tap on return.
             let installed = CGEventTap::with_enabled(

@@ -223,6 +223,30 @@ class DemoApp {
         window.setTimeout(() => c.classList.remove('selected'), 250);
         this.appendOutput(this.items[index] ?? '');
       },
+      getItemData: (index) => {
+        const c = this.cells[index];
+        return c ? { label: c.textContent ?? '', isEmpty: false } : null;
+      },
+      setItemStyle: (index, style) => {
+        const c = this.cells[index];
+        if (!c) return;
+        if (style.backgroundColor !== undefined) c.style.backgroundColor = style.backgroundColor;
+        if (style.textColor !== undefined) c.style.color = style.textColor;
+        if (style.borderColor !== undefined) c.style.borderColor = style.borderColor;
+        if (style.borderWidth !== undefined) c.style.borderWidth = `${style.borderWidth}px`;
+        if (style.boxShadow !== undefined) c.style.boxShadow = style.boxShadow;
+        if (style.opacity !== undefined) c.style.opacity = String(style.opacity);
+      },
+      clearItemStyles: () => {
+        for (const c of this.cells) {
+          c.style.backgroundColor = '';
+          c.style.color = '';
+          c.style.borderColor = '';
+          c.style.borderWidth = '';
+          c.style.boxShadow = '';
+          c.style.opacity = '';
+        }
+      },
     };
 
     const Cls = STRATEGY_CLASSES[this.strategy];
