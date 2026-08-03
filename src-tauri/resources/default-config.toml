@@ -35,3 +35,51 @@ switch_id = "switch_4"
 input = "keyboard"
 code = "RightArrow"
 
+[[mappings]]
+id = "switch_5"
+switch_id = "switch_5"
+input = "keyboard"
+code = "Tab"
+
+[[mappings]]
+id = "switch_6"
+switch_id = "switch_6"
+input = "keyboard"
+code = "A"
+
+[[mappings]]
+id = "switch_7"
+switch_id = "switch_7"
+input = "keyboard"
+code = "S"
+
+[[mappings]]
+id = "switch_8"
+switch_id = "switch_8"
+input = "keyboard"
+code = "D"
+
+[[mappings]]
+id = "switch_9"
+switch_id = "switch_9"
+input = "keyboard"
+code = "Z"
+
+[[mappings]]
+id = "switch_10"
+switch_id = "switch_10"
+input = "keyboard"
+code = "X"
+
+[[mappings]]
+id = "switch_11"
+switch_id = "switch_11"
+input = "keyboard"
+code = "C"
+
+[[mappings]]
+id = "switch_12"
+switch_id = "switch_12"
+input = "keyboard"
+code = "V"
+

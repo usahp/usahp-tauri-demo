@@ -68,6 +68,14 @@ const SWITCHES: { id: string; key: string; code: string; role: Role }[] = [
   { id: 'switch_2', key: 'Return', code: 'Enter', role: 'step' },
   { id: 'switch_3', key: '← Left', code: 'ArrowLeft', role: 'reset' },
   { id: 'switch_4', key: '→ Right', code: 'ArrowRight', role: 'cancel' },
+  { id: 'switch_5', key: 'Tab', code: 'Tab', role: 'select' },
+  { id: 'switch_6', key: 'A', code: 'KeyA', role: 'step' },
+  { id: 'switch_7', key: 'S', code: 'KeyS', role: 'select' },
+  { id: 'switch_8', key: 'D', code: 'KeyD', role: 'step' },
+  { id: 'switch_9', key: 'Z', code: 'KeyZ', role: 'select' },
+  { id: 'switch_10', key: 'X', code: 'KeyX', role: 'step' },
+  { id: 'switch_11', key: 'C', code: 'KeyC', role: 'select' },
+  { id: 'switch_12', key: 'V', code: 'KeyV', role: 'step' },
 ];
 
 const TAURI = (window as unknown as { __TAURI__?: { core?: { invoke: (cmd: string, args?: unknown) => Promise<unknown> } } }).__TAURI__;
@@ -210,7 +218,7 @@ class DemoApp {
           <dl class="mgr-grid">
             <div><dt>Heartbeat interval</dt><dd>500 ms</dd></div>
             <div><dt>Missed heartbeat limit</dt><dd>3 (1.5 s timeout)</dd></div>
-            <div><dt>Escape hold (Trigger A)</dt><dd>4000 ms <span class="mgr-future">(future)</span></dd></div>
+            <div><dt>Escape hold (Trigger A)</dt><dd>4000 ms</dd></div>
             <div><dt>Arbitration timeout</dt><dd>15 s <span class="mgr-future">(Stage 3)</span></dd></div>
           </dl>
         </section>
@@ -234,6 +242,12 @@ class DemoApp {
           <p class="mgr-hint" data-mgr-output-status hidden></p>
         </section>
         <section class="mgr-section">
+          <h3>Session</h3>
+          <div class="mgr-actions">
+            <button class="mgr-btn" data-mgr-claim>Claim session</button>
+            <button class="mgr-btn" data-mgr-release hidden>Release session</button>
+          </div>
+          <p class="mgr-hint">Claiming establishes a managed session (exclusive_foreground). The escape hatch fires if any switch is held > 4s. On macOS, focus loss revokes the session.</p>
           <h3>Session log</h3>
           <ul class="mgr-log" data-mgr-sessionlog></ul>
         </section>
@@ -343,11 +357,41 @@ class DemoApp {
     refreshBtn?.addEventListener('click', () => this.refreshManager());
     this.host.querySelector('[data-mgr-add]')?.addEventListener('click', () => {
       const nextNum = SWITCHES.length + 1;
-      if (nextNum > 8) return;
+      if (nextNum > 16) return;
       SWITCHES.push({ id: `switch_${nextNum}`, code: '', role: 'select', key: '' });
       this.renderSwitchEditor();
     });
     this.host.querySelector('[data-mgr-apply]')?.addEventListener('click', () => this.applySwitchEditor());
+
+    // Session claim/release
+    const claimBtn = this.host.querySelector('[data-mgr-claim]') as HTMLButtonElement | null;
+    const releaseBtn = this.host.querySelector('[data-mgr-release]') as HTMLButtonElement | null;
+    claimBtn?.addEventListener('click', async () => {
+      if (!tauriInvoke) return;
+      try {
+        await tauriInvoke('claim_session');
+      } catch (e) {
+        const log = this.host.querySelector('[data-mgr-sessionlog]');
+        if (log) {
+          const li = document.createElement('li');
+          li.textContent = `${new Date().toLocaleTimeString()} — Claim failed: ${e}`;
+          log.prepend(li);
+        }
+      }
+    });
+    releaseBtn?.addEventListener('click', async () => {
+      if (!tauriInvoke) return;
+      try {
+        await tauriInvoke('release_session');
+      } catch (e) {
+        const log = this.host.querySelector('[data-mgr-sessionlog]');
+        if (log) {
+          const li = document.createElement('li');
+          li.textContent = `${new Date().toLocaleTimeString()} — Release failed: ${e}`;
+          log.prepend(li);
+        }
+      }
+    });
   }
 
   private async refreshManager() {
@@ -674,6 +718,13 @@ class DemoApp {
           this.focused = true;
           this.paused = false;
           this.updateCapture();
+        } else {
+          const ind = this.host.querySelector('[data-capture-state]') as HTMLElement | null;
+          if (ind) {
+            ind.hidden = false;
+            ind.textContent = '○ Inject mode';
+            ind.style.color = '#2196f3';
+          }
         }
       });
       const tauriListen = (window as unknown as {
@@ -685,13 +736,25 @@ class DemoApp {
       // Listen for session lifecycle events from the backend monitor.
     if (tauriListen) {
       tauriListen('usahp-session-event', (e) => {
+        const payload = String(e.payload);
         const log = this.host.querySelector('[data-mgr-sessionlog]');
-        if (!log) return;
-        const li = document.createElement('li');
-        const t = new Date().toLocaleTimeString();
-        li.textContent = `${t} — ${e.payload}`;
-        log.prepend(li);
-        while (log.children.length > 20) log.removeChild(log.lastChild!);
+        if (log) {
+          const li = document.createElement('li');
+          const t = new Date().toLocaleTimeString();
+          li.textContent = `${t} — ${payload}`;
+          log.prepend(li);
+          while (log.children.length > 20) log.removeChild(log.lastChild!);
+        }
+        // Toggle Claim/Release buttons based on session state.
+        const claimBtn = this.host.querySelector('[data-mgr-claim]') as HTMLButtonElement | null;
+        const releaseBtn = this.host.querySelector('[data-mgr-release]') as HTMLButtonElement | null;
+        if (payload.includes('claimed') || payload.includes('Accepted')) {
+          if (claimBtn) claimBtn.hidden = true;
+          if (releaseBtn) releaseBtn.hidden = false;
+        } else if (payload.includes('revoked') || payload.includes('Released')) {
+          if (claimBtn) claimBtn.hidden = false;
+          if (releaseBtn) releaseBtn.hidden = true;
+        }
       });
     }
 
