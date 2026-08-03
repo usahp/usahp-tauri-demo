@@ -70,12 +70,6 @@ const SWITCHES: { id: string; key: string; code: string; role: Role }[] = [
   { id: 'switch_4', key: '→ Right', code: 'ArrowRight', role: 'cancel' },
   { id: 'switch_5', key: 'Tab', code: 'Tab', role: 'select' },
   { id: 'switch_6', key: 'A', code: 'KeyA', role: 'step' },
-  { id: 'switch_7', key: 'S', code: 'KeyS', role: 'select' },
-  { id: 'switch_8', key: 'D', code: 'KeyD', role: 'step' },
-  { id: 'switch_9', key: 'Z', code: 'KeyZ', role: 'select' },
-  { id: 'switch_10', key: 'X', code: 'KeyX', role: 'step' },
-  { id: 'switch_11', key: 'C', code: 'KeyC', role: 'select' },
-  { id: 'switch_12', key: 'V', code: 'KeyV', role: 'step' },
 ];
 
 const TAURI = (window as unknown as { __TAURI__?: { core?: { invoke: (cmd: string, args?: unknown) => Promise<unknown> } } }).__TAURI__;
