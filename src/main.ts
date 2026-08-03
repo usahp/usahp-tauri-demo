@@ -15,16 +15,18 @@ import {
   SnakeScanner,
   QuadrantScanner,
   EliminationScanner,
+  ContinuousScanner,
   type Scanner,
   type ScanConfig,
   type ScanConfigProvider,
   type ScanSurface,
   type SwitchAction,
 } from 'scan-engine';
+import { ContinuousOverlay, resolveIndexAtPoint } from 'scan-engine-dom';
 import { GestureEngine, UsahpAdapter, KeyboardAdapter, connectToScanner, type SwitchBindings, type SwitchInputPort } from 'switch-input';
 
 type Role = 'select' | 'step' | 'reset' | 'cancel';
-type StrategyId = 'row-column' | 'linear' | 'snake' | 'quadrant' | 'elimination';
+type StrategyId = 'row-column' | 'linear' | 'snake' | 'quadrant' | 'elimination' | 'continuous';
 
 const STRATEGY_CLASSES: Record<StrategyId, new (s: ScanSurface, c: ScanConfigProvider) => Scanner> = {
   'row-column': RowColumnScanner as unknown as new (s: ScanSurface, c: ScanConfigProvider) => Scanner,
@@ -32,6 +34,7 @@ const STRATEGY_CLASSES: Record<StrategyId, new (s: ScanSurface, c: ScanConfigPro
   snake: SnakeScanner as unknown as new (s: ScanSurface, c: ScanConfigProvider) => Scanner,
   quadrant: QuadrantScanner as unknown as new (s: ScanSurface, c: ScanConfigProvider) => Scanner,
   elimination: EliminationScanner as unknown as new (s: ScanSurface, c: ScanConfigProvider) => Scanner,
+  continuous: ContinuousScanner as unknown as new (s: ScanSurface, c: ScanConfigProvider) => Scanner,
 };
 const STRATEGY_LABELS: Record<StrategyId, string> = {
   'row-column': 'Row–Column',
@@ -39,6 +42,7 @@ const STRATEGY_LABELS: Record<StrategyId, string> = {
   snake: 'Snake',
   quadrant: 'Quadrant',
   elimination: 'Elimination (4-colour)',
+  continuous: 'Continuous (gliding)',
 };
 
 /** Elimination colours per partition (matches scan-engine-lab's convention). */
@@ -83,6 +87,7 @@ class DemoApp {
   private keyboard: KeyboardAdapter | null = null;
   private disconnectBridge: (() => void) | null = null;
   private capturing = false;
+  private overlay: ContinuousOverlay | null = null;
 
   constructor(host: HTMLElement) { this.host = host; }
 
@@ -120,6 +125,13 @@ class DemoApp {
             <select data-ctrl="strategy">
               ${(Object.keys(STRATEGY_LABELS) as StrategyId[]).map((id) => `<option value="${id}">${STRATEGY_LABELS[id]}</option>`).join('')}
             </select>
+            <label class="row" data-technique-row hidden><span>Technique</span>
+              <select data-ctrl="technique">
+                <option value="gliding">Gliding cursor</option>
+                <option value="crosshair">Crosshair</option>
+                <option value="eight-direction">Radar (8-direction)</option>
+              </select>
+            </label>
             <label class="row"><span>Pace</span><input type="range" min="200" max="2000" step="100" value="900" data-ctrl="rate"/><output data-out="rate">900</output></label>
             <label class="row"><span>Input mode</span>
               <select data-ctrl="mode"><option value="auto">Auto</option><option value="manual">Manual (step)</option></select>
@@ -144,17 +156,14 @@ class DemoApp {
       if (ctrl === 'content') { this.items = CONTENT[t.value](); this.buildScanner(); }
       else if (ctrl === 'strategy') {
         this.strategy = t.value as StrategyId;
-        this.config.set({ scanPattern: this.strategy });
-        if (this.strategy === 'elimination') {
-          // Elimination is press-driven: show all colour partitions at once
-          // (manual mode → highlightAllBlocksManual), no auto-stepping.
-          this.config.set({ scanInputMode: 'manual' });
-          const modeSel = this.host.querySelector('[data-ctrl="mode"]') as HTMLSelectElement | null;
-          if (modeSel) modeSel.value = 'manual';
-        }
+        this.applyStrategyConfig();
         this.buildScanner();
         this.reconnectBindings();
         this.renderSwitchPanel();
+      }
+      else if (ctrl === 'technique') {
+        this.config.set({ continuousTechnique: t.value as ScanConfig['continuousTechnique'] });
+        this.buildScanner();
       }
       else if (ctrl === 'mode') { this.config.set({ scanInputMode: t.value as ScanConfig['scanInputMode'] }); }
     });
@@ -209,17 +218,51 @@ class DemoApp {
     });
   }
 
+  private applyStrategyConfig() {
+    const techRow = this.host.querySelector('[data-technique-row]') as HTMLElement | null;
+    if (this.strategy === 'continuous') {
+      const tech = (this.host.querySelector('[data-ctrl="technique"]') as HTMLSelectElement).value as ScanConfig['continuousTechnique'];
+      this.config.set({ continuousTechnique: tech });
+      if (techRow) techRow.hidden = false;
+    } else {
+      if (techRow) techRow.hidden = true;
+      this.config.set({ scanPattern: this.strategy as ScanConfig['scanPattern'] });
+    if (this.strategy === 'continuous') {
+      root.innerHTML = `
+        <div class="sw">
+          <span class="sw-key">Space</span>
+          <strong style="flex:1">Select (lock → pick)</strong>
+          <button data-inject="switch_1">Select</button>
+        </div>
+        <p class="hint">Continuous mode: press Select to lock the moving cursor on one axis, then again to select.</p>`;
+    } else if (this.strategy === 'elimination') {
+        // Elimination is press-driven: show all colour partitions at once.
+        this.config.set({ scanInputMode: 'manual' });
+        const modeSel = this.host.querySelector('[data-ctrl="mode"]') as HTMLSelectElement | null;
+        if (modeSel) modeSel.value = 'manual';
+      }
+    }
+  }
+
   private buildScanner() {
     this.scanner?.stop();
+    // Tear down any previous continuous overlay.
+    if (this.overlay) { this.overlay.destroy(); this.overlay = null; }
+
     const grid = this.host.querySelector('[data-grid]') as HTMLElement;
     grid.innerHTML = '';
     this.cells.length = 0;
-    for (const label of this.items) {
+    this.items.forEach((label, i) => {
       const cell = document.createElement('button');
       cell.className = 'cell';
+      cell.dataset.index = String(i);
       cell.textContent = label;
       grid.appendChild(cell);
       this.cells.push(cell);
+    });
+
+    if (this.strategy === 'continuous') {
+      this.overlay = new ContinuousOverlay(grid);
     }
 
     const surface: ScanSurface = {
@@ -262,10 +305,22 @@ class DemoApp {
           c.style.opacity = '';
         }
       },
+      getContainerElement: () => grid,
+      resolveIndexAtPoint: (xPercent, yPercent) => resolveIndexAtPoint(grid, xPercent, yPercent),
     };
 
-    const Cls = STRATEGY_CLASSES[this.strategy];
-    this.scanner = new Cls(surface, this.config.provider);
+    type Cb = { onContinuousUpdate?: (state: import('scan-engine').ContinuousUpdate) => void };
+    const callbacks: Cb =
+      this.strategy === 'continuous'
+        ? { onContinuousUpdate: (st) => this.overlay?.update(st) }
+        : {};
+    const ScanCtor = STRATEGY_CLASSES[this.strategy] as unknown as new (
+      s: ScanSurface,
+      c: ScanConfigProvider,
+      cb?: Cb,
+    ) => Scanner;
+
+    this.scanner = new ScanCtor(surface, this.config.provider, callbacks);
     this.scanner.start();
   }
 
@@ -345,6 +400,9 @@ class DemoApp {
     if (this.strategy === 'elimination') {
       // Each physical switch selects its coloured partition directly.
       for (const s of SWITCHES) bindings[s.id] = { press: `switch-${s.id.slice(-1)}` as SwitchAction };
+    } else if (this.strategy === 'continuous') {
+      // One switch: press to lock X / advance stages.
+      bindings['switch_1'] = { press: 'select' };
     } else {
       for (const s of SWITCHES) bindings[s.id] = { press: s.role };
     }
@@ -399,7 +457,7 @@ style.textContent = `
   .capture-btn:hover { background:#444; }
   .mn { display:grid; grid-template-columns: 1fr 320px; gap:16px; padding:16px; }
   .preview { background:#fff; border-radius:10px; padding:16px; }
-  .grid { display:grid; grid-template-columns: repeat(4, 1fr); gap:8px; min-height:300px; }
+  .grid { display:grid; grid-template-columns: repeat(4, 1fr); gap:8px; min-height:300px; position:relative; }
   .cell { padding:18px 8px; font-size:1rem; background:#eef0f3; border:2px solid transparent; border-radius:8px; cursor:default; }
   .cell.focus { border-color:#ff9800; background:#fff3e0; }
   .cell.selected { background:#4caf50; color:#fff; }

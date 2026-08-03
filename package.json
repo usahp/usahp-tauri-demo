@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "scan-engine": "^0.1.3",
+    "scan-engine-dom": "^0.1.3",
     "switch-input": "^0.2.0"
   },
   "devDependencies": {
