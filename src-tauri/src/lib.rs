@@ -7,7 +7,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use tokio::sync::mpsc;
 
 #[cfg(target_os = "macos")]
@@ -169,6 +169,19 @@ pub fn run() {
                 switches,
                 capture_flag,
             });
+
+            // USAHP handoff (software, exclusive_foreground): the frontend drives
+            // capture on window focus — focused → app grabs the switches, blurred
+            // → keys pass through to the OS / Apple Switch Control. We just emit
+            // focus changes; the frontend owns the capture decision.
+            if let Some(window) = app.get_webview_window("main") {
+                let win = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Focused(focused) = event {
+                        let _ = win.emit("usahp-focus", *focused);
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![usahp_status, inject_switch, set_capture])

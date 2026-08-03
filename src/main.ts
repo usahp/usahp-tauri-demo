@@ -92,7 +92,9 @@ class DemoApp {
   private adapter: UsahpAdapter | null = null;
   private keyboard: KeyboardAdapter | null = null;
   private disconnectBridge: (() => void) | null = null;
-  private capturing = false;
+  private captureInstalled = false;
+  private focused = true;
+  private paused = false;
   private overlay: ContinuousOverlay | null = null;
   private dwell = new Map<string, { count: number; total: number; last: number }>();
   private presses: number[] = [];
@@ -113,7 +115,8 @@ class DemoApp {
       <header class="hd">
         <h1>USAHP Switch Scanner</h1>
         <div class="hd-right">
-          <button class="capture-btn" data-capture hidden>Pause capture</button>
+          <span class="cap-state" data-capture-state hidden></span>
+          <button class="capture-btn" data-capture hidden>Pause</button>
           <div class="status" data-status>starting…</div>
         </div>
       </header>
@@ -391,24 +394,28 @@ class DemoApp {
 
     this.renderSwitchPanel();
 
-    // If the OS grab is installed, surface a pause/resume capture toggle.
-    const capBtn = this.host.querySelector('[data-capture]') as HTMLButtonElement | null;
-    if (tauriInvoke && capBtn) {
+    // USAHP handoff (exclusive_foreground): when the OS grab is installed, capture
+    // follows window focus — focused → app grabs the switches, blurred → keys pass
+    // to the OS / Switch Control. A Pause button overrides (hold capture off).
+    if (tauriInvoke) {
       tauriInvoke('usahp_status').then((s) => {
-        const st = s as { capture_installed?: boolean; capturing?: boolean };
-        if (st.capture_installed) {
-          this.capturing = !!st.capturing;
-          capBtn.hidden = false;
-          capBtn.textContent = this.capturing ? 'Pause capture' : 'Resume capture';
+        this.captureInstalled = !!(s as { capture_installed?: boolean }).capture_installed;
+        if (this.captureInstalled) {
+          const btn = this.host.querySelector('[data-capture]') as HTMLButtonElement | null;
+          if (btn) btn.hidden = false;
+          this.focused = true;
+          this.paused = false;
+          this.updateCapture();
         }
       });
-      capBtn.addEventListener('click', async () => {
-        const next = !this.capturing;
-        await tauriInvoke('set_capture', { enabled: next });
-        this.capturing = next;
-        capBtn.textContent = next ? 'Pause capture' : 'Resume capture';
-        this.setStatus(next ? 'capture resumed' : 'capture released — keys pass through');
-      });
+      const tauriListen = (window as unknown as {
+        __TAURI__?: { event?: { listen: (ev: string, cb: (e: { payload: boolean }) => void) => Promise<() => void> } };
+      }).__TAURI__?.event?.listen;
+      if (tauriListen) {
+        tauriListen('usahp-focus', (e) => { this.focused = !!e.payload; this.updateCapture(); });
+      }
+      const capBtn = this.host.querySelector('[data-capture]') as HTMLButtonElement | null;
+      capBtn?.addEventListener('click', () => { this.paused = !this.paused; this.updateCapture(); });
     }
 
     this.setStatus(inject ? 'Tauri — broker routing' : 'Browser — direct (no broker)');
@@ -487,6 +494,20 @@ class DemoApp {
     const el = this.host.querySelector('[data-status]');
     if (el) el.textContent = text;
   }
+
+  private async updateCapture() {
+    if (!this.captureInstalled) return;
+    const effective = this.focused && !this.paused;
+    if (tauriInvoke) await tauriInvoke('set_capture', { enabled: effective });
+    const ind = this.host.querySelector('[data-capture-state]') as HTMLElement | null;
+    if (ind) {
+      ind.hidden = false;
+      ind.textContent = this.paused ? '⏸ Paused' : this.focused ? '● App control' : '○ System';
+      ind.style.color = this.paused ? '#ff9800' : this.focused ? '#4caf50' : '#999';
+    }
+    const btn = this.host.querySelector('[data-capture]') as HTMLButtonElement | null;
+    if (btn) btn.textContent = this.paused ? 'Resume' : 'Pause';
+  }
 }
 
 function baseConfig(rate: number): ScanConfig {
@@ -523,6 +544,7 @@ style.textContent = `
   .status { font-size:.8rem; opacity:.85; }
   .capture-btn { font-size:.78rem; padding:4px 10px; border:1px solid #555; border-radius:6px; background:#333; color:#fff; cursor:pointer; }
   .capture-btn:hover { background:#444; }
+  .cap-state { font-size:.78rem; font-weight:600; }
   .mn { display:grid; grid-template-columns: 1fr 320px; gap:16px; padding:16px; }
   .preview { background:#fff; border-radius:10px; padding:16px; }
   .grid { display:grid; grid-template-columns: repeat(4, 1fr); gap:8px; min-height:300px; position:relative; }
