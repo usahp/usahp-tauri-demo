@@ -14,28 +14,39 @@ import {
   LinearScanner,
   SnakeScanner,
   QuadrantScanner,
+  EliminationScanner,
   type Scanner,
   type ScanConfig,
   type ScanConfigProvider,
   type ScanSurface,
   type SwitchAction,
 } from 'scan-engine';
-import { GestureEngine, UsahpAdapter, KeyboardAdapter, connectToScanner, type SwitchBindings } from 'switch-input';
+import { GestureEngine, UsahpAdapter, KeyboardAdapter, connectToScanner, type SwitchBindings, type SwitchInputPort } from 'switch-input';
 
 type Role = 'select' | 'step' | 'reset' | 'cancel';
-type StrategyId = 'row-column' | 'linear' | 'snake' | 'quadrant';
+type StrategyId = 'row-column' | 'linear' | 'snake' | 'quadrant' | 'elimination';
 
 const STRATEGY_CLASSES: Record<StrategyId, new (s: ScanSurface, c: ScanConfigProvider) => Scanner> = {
   'row-column': RowColumnScanner as unknown as new (s: ScanSurface, c: ScanConfigProvider) => Scanner,
   linear: LinearScanner as unknown as new (s: ScanSurface, c: ScanConfigProvider) => Scanner,
   snake: SnakeScanner as unknown as new (s: ScanSurface, c: ScanConfigProvider) => Scanner,
   quadrant: QuadrantScanner as unknown as new (s: ScanSurface, c: ScanConfigProvider) => Scanner,
+  elimination: EliminationScanner as unknown as new (s: ScanSurface, c: ScanConfigProvider) => Scanner,
 };
 const STRATEGY_LABELS: Record<StrategyId, string> = {
   'row-column': 'Row–Column',
   linear: 'Linear',
   snake: 'Snake',
   quadrant: 'Quadrant',
+  elimination: 'Elimination (4-colour)',
+};
+
+/** Elimination colours per partition (matches scan-engine-lab's convention). */
+const ELIM_COLOURS: Record<string, string> = {
+  switch_1: '#2196F3', // blue
+  switch_2: '#F44336', // red
+  switch_3: '#4CAF50', // green
+  switch_4: '#FFEB3B', // yellow
 };
 
 const CONTENT: Record<string, () => string[]> = {
@@ -123,7 +134,13 @@ class DemoApp {
       const ctrl = t.dataset.ctrl;
       if (!ctrl) return;
       if (ctrl === 'content') { this.items = CONTENT[t.value](); this.buildScanner(); }
-      else if (ctrl === 'strategy') { this.strategy = t.value as StrategyId; this.config.set({ scanPattern: this.strategy }); this.buildScanner(); }
+      else if (ctrl === 'strategy') {
+        this.strategy = t.value as StrategyId;
+        this.config.set({ scanPattern: this.strategy });
+        this.buildScanner();
+        this.reconnectBindings();
+        this.renderSwitchPanel();
+      }
       else if (ctrl === 'mode') { this.config.set({ scanInputMode: t.value as ScanConfig['scanInputMode'] }); }
     });
     this.host.addEventListener('input', (e) => {
@@ -140,21 +157,30 @@ class DemoApp {
   private renderSwitchPanel() {
     const root = this.host.querySelector('[data-switches]');
     if (!root) return;
-    root.innerHTML = SWITCHES.map((s) => `
-      <div class="sw" data-id="${s.id}">
-        <span class="sw-key">${s.key}</span>
-        <select data-role="${s.id}">
-          ${(['select', 'step', 'reset', 'cancel'] as Role[]).map((r) => `<option value="${r}" ${r === s.role ? 'selected' : ''}>${r}</option>`).join('')}
-        </select>
-        <button data-inject="${s.id}">${s.id.replace('switch_', 'Sw ')}</button>
-      </div>`).join('');
-    root.querySelectorAll<HTMLSelectElement>('[data-role]').forEach((sel) => {
-      sel.addEventListener('change', () => {
-        const id = sel.dataset.role!;
-        SWITCHES.find((x) => x.id === id)!.role = sel.value as Role;
-        this.reconnectBindings();
+    if (this.strategy === 'elimination') {
+      // 4 coloured partition buttons (no role select).
+      root.innerHTML = SWITCHES.map((s) => `
+        <div class="sw" data-id="${s.id}">
+          <span class="sw-key">${s.key}</span>
+          <button class="sw-colour" data-inject="${s.id}" style="background:${ELIM_COLOURS[s.id]};color:${s.id === 'switch_4' ? '#333' : '#fff'}">${s.id.replace('switch_', 'Sw ')}</button>
+        </div>`).join('');
+    } else {
+      root.innerHTML = SWITCHES.map((s) => `
+        <div class="sw" data-id="${s.id}">
+          <span class="sw-key">${s.key}</span>
+          <select data-role="${s.id}">
+            ${(['select', 'step', 'reset', 'cancel'] as Role[]).map((r) => `<option value="${r}" ${r === s.role ? 'selected' : ''}>${r}</option>`).join('')}
+          </select>
+          <button data-inject="${s.id}">${s.id.replace('switch_', 'Sw ')}</button>
+        </div>`).join('');
+      root.querySelectorAll<HTMLSelectElement>('[data-role]').forEach((sel) => {
+        sel.addEventListener('change', () => {
+          const id = sel.dataset.role!;
+          SWITCHES.find((x) => x.id === id)!.role = sel.value as Role;
+          this.reconnectBindings();
+        });
       });
-    });
+    }
     // On-screen buttons: route through the broker (inject) in Tauri, else drive
     // the engine directly so the browser fallback works.
     root.querySelectorAll<HTMLButtonElement>('[data-inject]').forEach((btn) => {
@@ -242,7 +268,12 @@ class DemoApp {
   private reconnectBindings() {
     this.disconnectBridge?.();
     const bindings: SwitchBindings = {};
-    for (const s of SWITCHES) bindings[s.id] = { press: s.role };
+    if (this.strategy === 'elimination') {
+      // Each physical switch selects its coloured partition directly.
+      for (const s of SWITCHES) bindings[s.id] = { press: `switch-${s.id.slice(-1)}` as SwitchAction };
+    } else {
+      for (const s of SWITCHES) bindings[s.id] = { press: s.role };
+    }
     const proxy = { handleAction: (a: SwitchAction) => this.scanner?.handleAction(a) };
     this.disconnectBridge = connectToScanner(this.engine, proxy, bindings);
   }
