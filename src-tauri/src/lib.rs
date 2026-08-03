@@ -106,11 +106,26 @@ pub fn run() {
                 broker
             });
 
-            // OS-level switch capture (rdev on macOS/Windows, evdev on Linux).
-            // Logs + continues on failure — the broker still serves, capture
-            // just won't work (e.g. macOS Accessibility permission missing).
-            if let Err(error) = usahp_daemon::input::spawn(&config.mappings, broker.clone()) {
-                tracing::error!(%error, "USAHP input backend failed to start");
+            // The OS-level grab is OFF by default. rdev's macOS event-tap callback
+            // calls HIToolbox TextServices (TSMGetInputSourceProperty, to build key
+            // names) off the main thread, which traps with `_dispatch_assert_queue_fail`
+            // → SIGTRAP on the first captured key — uncatchable, kills the process.
+            // Capture instead happens in the webview (KeyboardAdapter → inject_switch)
+            // so keys still flow through the broker. Set USAHP_GRAB=1 to try the real
+            // grab (works on Linux/Windows; macOS needs an rdev fix or a usahp-side
+            // capture rewrite).
+            if std::env::var("USAHP_GRAB")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false)
+            {
+                if let Err(error) = usahp_daemon::input::spawn(&config.mappings, broker.clone()) {
+                    tracing::error!(%error, "USAHP input backend failed to start");
+                }
+            } else {
+                tracing::info!(
+                    "USAHP OS grab disabled (set USAHP_GRAB=1 to enable). Capture is via the \
+                     webview → inject_switch."
+                );
             }
 
             app.manage(AppState {

@@ -208,23 +208,35 @@ class DemoApp {
     this.engine = new GestureEngine({ tapWindowMs: 250, holdThresholdMs: 1000 });
     this.reconnectBindings();
 
-    // Browser fallback: drive the engine from the keyboard when there's no
-    // Tauri broker to grab keys.
-    if (!inject) {
-      const keyMap: Record<string, string> = {};
-      for (const s of SWITCHES) keyMap[s.code] = s.id;
-      this.keyboard = new KeyboardAdapter(window, this.engine, keyMap, { preventDefaultOnBound: true });
-    }
+    const keyMap: Record<string, string> = {};
+    for (const s of SWITCHES) keyMap[s.code] = s.id;
 
-    // USAHP adapter: in Tauri it connects to the embedded broker; in a browser
-    // it just retries (stays disconnected — harmless).
+    // USAHP adapter drives the engine from the embedded broker (Tauri), or
+    // retries disconnected in a browser.
     this.adapter = new UsahpAdapter(this.engine, {
       onStatus: (st) => this.setStatus(`broker: ${st}`),
       onSwitches: () => this.setStatus('broker: connected'),
     });
 
+    if (inject) {
+      // Tauri: the broker's own global grab is disabled (rdev/macOS trap), so we
+      // capture keys here and route them THROUGH the broker — KeyboardAdapter →
+      // inject_switch → broker → UsahpAdapter → engine. Same path on-screen
+      // buttons take; the engine is driven only by the adapter.
+      const brokerPort = {
+        press: (id: string) => { void inject(id, true); },
+        release: (id: string) => { void inject(id, false); },
+        disconnect: () => {},
+        suspend: () => {},
+      };
+      this.keyboard = new KeyboardAdapter(window, brokerPort as unknown as import('switch-input').SwitchInputPort, keyMap, { preventDefaultOnBound: true });
+    } else {
+      // Browser fallback: keyboard drives the engine directly (no broker).
+      this.keyboard = new KeyboardAdapter(window, this.engine, keyMap, { preventDefaultOnBound: true });
+    }
+
     this.renderSwitchPanel();
-    this.setStatus(inject ? 'Tauri — broker routing' : 'Browser — direct (no broker)');
+    this.setStatus(inject ? 'Tauri — webview capture → broker' : 'Browser — direct (no broker)');
   }
 
   private reconnectBindings() {

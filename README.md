@@ -25,7 +25,7 @@ The `setup` hook replays `usahpd`'s `main` on Tauri's async runtime: parse the e
 ## Prerequisites
 
 - **Rust** (≥ 1.85) and **Node.js**. That's it — `npm install` pulls `scan-engine` + `switch-input` from npm; no sibling checkout needed.
-- **macOS:** the keyboard switch grab uses a global hook (`rdev`). Grant **Accessibility** to the app binary (System Settings → Privacy → Accessibility) for capture to work; without it the grab is inert (keys pass through to the OS) but the broker still serves.
+- **macOS:** switch capture happens in the webview by default (keys are captured when the window is focused and routed through the broker). No Accessibility permission needed. The broker's own system-wide `rdev` grab is **disabled** — see "Capture" below.
 
 ## Run
 
@@ -41,11 +41,17 @@ The embedded broker serves `ws://127.0.0.1:7312`. Default mappings: `Space`/`Ret
 ## Status
 
 - ✅ **Broker embedded** and verified in-process — the app serves `hello` on `:7312` at launch.
-- ✅ **Frontend routed through the broker** — physical keys (global grab) and on-screen buttons (`inject_switch`) both flow through USAHP to the scanner.
+- ✅ **Frontend routed through the broker** — physical keys (webview capture) and on-screen buttons (`inject_switch`) both flow through USAHP to the scanner.
 - ⏳ Analog/confidence inputs ride on [OwenMcGirr/usahp#3](https://github.com/OwenMcGirr/usahp/pull/3); this repo pins a pre-confidence rev of `usahp` and bumps after that merges.
+
+## Capture (important)
+
+By default the app captures switch keys **in the webview** and routes them through the embedded broker (`KeyboardAdapter` → `inject_switch` → broker → `UsahpAdapter`). This needs window focus, not system-wide, but works everywhere with no permissions.
+
+The broker's own **system-wide `rdev` grab is disabled.** On macOS, `rdev`'s event-tap callback calls HIToolbox TextServices (`TSMGetInputSourceProperty`) off the main thread, which asserts and **traps (`SIGTRAP`) on the first captured key — crashing the app**. That's an `rdev`/macOS bug, not ours. Set `USAHP_GRAB=1` to try the real grab (viable on Linux/Windows; macOS needs an rdev fix or a usahp-side capture rewrite). When that's fixed, the demo can switch back to true global capture.
 
 ## Notes
 
 - `usahp-{core,daemon}` are git deps pinned to a rev (see `src-tauri/Cargo.toml`). For local iteration against a checked-out usahp workspace, override with a `[patch]` or a local path.
-- Embedded config: `src-tauri/resources/default-config.toml`. Live key remapping isn't supported under the global grab (`rdev` can't restart) — keys are fixed there; the UI reassigns *roles*. Arbitrary-key remap is a future usahp reconfigure feature.
-- Capture is cross-platform by construction (rdev on macOS/Windows, evdev on Linux); verified on macOS so far. Windows/Linux need their per-platform input permission at runtime.
+- Embedded config: `src-tauri/resources/default-config.toml`. Keys are fixed there; the UI reassigns *roles*. Arbitrary live-key remap is a future usahp feature.
+- Cross-platform by construction (rdev on Windows, evdev on Linux); verified on macOS so far. Windows/Linux need their per-platform input permission when the grab is enabled.
