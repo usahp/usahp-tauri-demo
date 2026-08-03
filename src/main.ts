@@ -137,6 +137,13 @@ class DemoApp {
       else if (ctrl === 'strategy') {
         this.strategy = t.value as StrategyId;
         this.config.set({ scanPattern: this.strategy });
+        if (this.strategy === 'elimination') {
+          // Elimination is press-driven: show all colour partitions at once
+          // (manual mode → highlightAllBlocksManual), no auto-stepping.
+          this.config.set({ scanInputMode: 'manual' });
+          const modeSel = this.host.querySelector('[data-ctrl="mode"]') as HTMLSelectElement | null;
+          if (modeSel) modeSel.value = 'manual';
+        }
         this.buildScanner();
         this.reconnectBindings();
         this.renderSwitchPanel();
