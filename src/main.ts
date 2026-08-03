@@ -27,6 +27,8 @@ import { GestureEngine, UsahpAdapter, KeyboardAdapter, connectToScanner, type Sw
 
 type Role = 'select' | 'step' | 'reset' | 'cancel';
 type StrategyId = 'row-column' | 'linear' | 'snake' | 'quadrant' | 'elimination' | 'continuous';
+type OrderId = 'row-column' | 'linear' | 'snake' | 'quadrant' | 'elimination';
+type ScanMode = 'items' | 'gliding' | 'crosshair' | 'eight-direction';
 
 const STRATEGY_CLASSES: Record<StrategyId, new (s: ScanSurface, c: ScanConfigProvider) => Scanner> = {
   'row-column': RowColumnScanner as unknown as new (s: ScanSurface, c: ScanConfigProvider) => Scanner,
@@ -78,7 +80,11 @@ class DemoApp {
   private readonly host: HTMLElement;
   private readonly cells: HTMLElement[] = [];
   private items: string[] = CONTENT.Words();
-  private strategy: StrategyId = 'row-column';
+  private mode: ScanMode = 'items';
+  private order: OrderId = 'row-column';
+  private get strategy(): StrategyId {
+    return this.mode === 'items' ? this.order : 'continuous';
+  }
   private readonly config = mutableConfig(baseConfig(900));
 
   private scanner: Scanner | null = null;
@@ -121,15 +127,22 @@ class DemoApp {
               ${Object.keys(CONTENT).map((k) => `<option value="${k}">${k}</option>`).join('')}
             </select>
           </fieldset>
-          <fieldset><legend>Scan order</legend>
-            <select data-ctrl="strategy">
-              ${(Object.keys(STRATEGY_LABELS) as StrategyId[]).map((id) => `<option value="${id}">${STRATEGY_LABELS[id]}</option>`).join('')}
-            </select>
-            <label class="row" data-technique-row hidden><span>Technique</span>
-              <select data-ctrl="technique">
+          <fieldset><legend>Scanning</legend>
+            <label class="row"><span>Mode</span>
+              <select data-ctrl="scanmode">
+                <option value="items">Scan items</option>
                 <option value="gliding">Gliding cursor</option>
                 <option value="crosshair">Crosshair</option>
                 <option value="eight-direction">Radar (8-direction)</option>
+              </select>
+            </label>
+            <label class="row" data-order-row><span>Scan order</span>
+              <select data-ctrl="order">
+                <option value="row-column">Row–Column</option>
+                <option value="linear">Linear</option>
+                <option value="snake">Snake</option>
+                <option value="quadrant">Quadrant</option>
+                <option value="elimination">Elimination (4-colour)</option>
               </select>
             </label>
             <label class="row"><span>Pace</span><input type="range" min="200" max="2000" step="100" value="900" data-ctrl="rate"/><output data-out="rate">900</output></label>
@@ -154,16 +167,19 @@ class DemoApp {
       const ctrl = t.dataset.ctrl;
       if (!ctrl) return;
       if (ctrl === 'content') { this.items = CONTENT[t.value](); this.buildScanner(); }
-      else if (ctrl === 'strategy') {
-        this.strategy = t.value as StrategyId;
-        this.applyStrategyConfig();
+      else if (ctrl === 'scanmode') {
+        this.mode = t.value as ScanMode;
+        this.applyModeConfig();
         this.buildScanner();
         this.reconnectBindings();
         this.renderSwitchPanel();
       }
-      else if (ctrl === 'technique') {
-        this.config.set({ continuousTechnique: t.value as ScanConfig['continuousTechnique'] });
+      else if (ctrl === 'order') {
+        this.order = t.value as OrderId;
+        this.applyModeConfig();
         this.buildScanner();
+        this.reconnectBindings();
+        this.renderSwitchPanel();
       }
       else if (ctrl === 'mode') { this.config.set({ scanInputMode: t.value as ScanConfig['scanInputMode'] }); }
     });
@@ -181,7 +197,15 @@ class DemoApp {
   private renderSwitchPanel() {
     const root = this.host.querySelector('[data-switches]');
     if (!root) return;
-    if (this.strategy === 'elimination') {
+    if (this.strategy === 'continuous') {
+      root.innerHTML = `
+        <div class="sw">
+          <span class="sw-key">Space</span>
+          <strong style="flex:1">Select (lock → pick)</strong>
+          <button data-inject="switch_1">Select</button>
+        </div>
+        <p class="hint">Continuous mode: press Select to lock the moving cursor on one axis, then again to select.</p>`;
+    } else if (this.strategy === 'elimination') {
       // 4 coloured partition buttons (no role select).
       root.innerHTML = SWITCHES.map((s) => `
         <div class="sw" data-id="${s.id}">
@@ -218,29 +242,21 @@ class DemoApp {
     });
   }
 
-  private applyStrategyConfig() {
-    const techRow = this.host.querySelector('[data-technique-row]') as HTMLElement | null;
-    if (this.strategy === 'continuous') {
-      const tech = (this.host.querySelector('[data-ctrl="technique"]') as HTMLSelectElement).value as ScanConfig['continuousTechnique'];
-      this.config.set({ continuousTechnique: tech });
-      if (techRow) techRow.hidden = false;
-    } else {
-      if (techRow) techRow.hidden = true;
-      this.config.set({ scanPattern: this.strategy as ScanConfig['scanPattern'] });
-    if (this.strategy === 'continuous') {
-      root.innerHTML = `
-        <div class="sw">
-          <span class="sw-key">Space</span>
-          <strong style="flex:1">Select (lock → pick)</strong>
-          <button data-inject="switch_1">Select</button>
-        </div>
-        <p class="hint">Continuous mode: press Select to lock the moving cursor on one axis, then again to select.</p>`;
-    } else if (this.strategy === 'elimination') {
+  private applyModeConfig() {
+    const orderRow = this.host.querySelector('[data-order-row]') as HTMLElement | null;
+    if (this.mode === 'items') {
+      if (orderRow) orderRow.hidden = false;
+      this.config.set({ scanPattern: this.order as ScanConfig['scanPattern'] });
+      if (this.order === 'elimination') {
         // Elimination is press-driven: show all colour partitions at once.
         this.config.set({ scanInputMode: 'manual' });
         const modeSel = this.host.querySelector('[data-ctrl="mode"]') as HTMLSelectElement | null;
         if (modeSel) modeSel.value = 'manual';
       }
+    } else {
+      // A continuous technique — no scan order applies.
+      if (orderRow) orderRow.hidden = true;
+      this.config.set({ continuousTechnique: this.mode as ScanConfig['continuousTechnique'] });
     }
   }
 
