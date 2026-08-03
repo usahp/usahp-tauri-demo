@@ -4503,7 +4503,7 @@ dependencies = [
 [[package]]
 name = "usahp-core"
 version = "0.1.0"
-source = "git+https://github.com/OwenMcGirr/usahp.git?rev=a0baa321604e548305000f4cda355a0d070cf9a2#a0baa321604e548305000f4cda355a0d070cf9a2"
+source = "git+https://github.com/OwenMcGirr/usahp.git?rev=fa979676433f63533fee9efe0a4c9ccfa1dfbc48#fa979676433f63533fee9efe0a4c9ccfa1dfbc48"
 dependencies = [
  "serde",
  "thiserror 2.0.19",
@@ -4513,7 +4513,7 @@ dependencies = [
 [[package]]
 name = "usahp-daemon"
 version = "0.1.0"
-source = "git+https://github.com/OwenMcGirr/usahp.git?rev=a0baa321604e548305000f4cda355a0d070cf9a2#a0baa321604e548305000f4cda355a0d070cf9a2"
+source = "git+https://github.com/OwenMcGirr/usahp.git?rev=fa979676433f63533fee9efe0a4c9ccfa1dfbc48#fa979676433f63533fee9efe0a4c9ccfa1dfbc48"
 dependencies = [
  "anyhow",
  "clap",
@@ -4532,6 +4532,8 @@ dependencies = [
 name = "usahp-tauri-demo"
 version = "0.1.0"
 dependencies = [
+ "core-foundation 0.10.1",
+ "core-graphics 0.25.0",
  "serde",
  "serde_json",
  "tauri",
