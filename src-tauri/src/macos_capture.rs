@@ -129,3 +129,28 @@ pub fn spawn(mappings: &[Mapping], broker: mpsc::Sender<BrokerCommand>) -> Optio
     }
     Some(capture)
 }
+
+/// Post a synthetic keystroke to the OS session (for output routing —
+/// translates USAHP switch events into OS-level key presses that external
+/// apps like Grid 3 or games can receive).
+#[cfg(target_os = "macos")]
+pub fn post_keystroke(keycode: u16, key_down: bool) {
+    use core_graphics::event::{CGEvent, CGEventTapLocation};
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+
+    let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
+        Ok(s) => s,
+        Err(_) => {
+            tracing::warn!("could not create CGEventSource for keystroke output");
+            return;
+        }
+    };
+    let event = match CGEvent::new_keyboard_event(source, keycode, key_down) {
+        Ok(e) => e,
+        Err(_) => {
+            tracing::warn!("could not create CGEvent for keycode {keycode}");
+            return;
+        }
+    };
+    event.post(CGEventTapLocation::HID);
+}

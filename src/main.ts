@@ -215,6 +215,18 @@ class DemoApp {
           </dl>
         </section>
         <section class="mgr-section">
+          <h3>Output routing</h3>
+          <p class="mgr-hint">Translate broker events to OS keystrokes so external apps (Grid 3, games) can receive them.</p>
+          <table class="mgr-table">
+            <thead><tr><th>Switch</th><th>Output key (click to register)</th><th>Key code</th></tr></thead>
+            <tbody data-mgr-output-rows></tbody>
+          </table>
+          <div class="mgr-actions">
+            <button class="mgr-btn mgr-apply" data-mgr-output-enable>Enable output</button>
+            <button class="mgr-btn" data-mgr-output-disable hidden>Disable output</button>
+          </div>
+        </section>
+        <section class="mgr-section">
           <h3>Session log</h3>
           <ul class="mgr-log" data-mgr-sessionlog></ul>
         </section>
@@ -346,6 +358,57 @@ class DemoApp {
     set('capture', st.capture_installed ? (st.capturing ? '● Active' : '⏸ Paused') : 'Webview');
     set('switches', (st.switches ?? []).join(', ') || '—');
     this.renderSwitchEditor();
+    this.renderOutputRouting();
+  }
+
+  private renderOutputRouting() {
+    const tbody = this.host.querySelector('[data-mgr-output-rows]');
+    if (!tbody) return;
+    tbody.innerHTML = SWITCHES.map((s) => `
+      <tr>
+        <td>${s.id}</td>
+        <td><input class="mgr-input mgr-key" data-output-key="${s.id}" placeholder="click, then press a key"/></td>
+        <td><span data-output-code="${s.id}" class="mgr-keycode">—</span></td>
+      </tr>`).join('');
+    // Key registration per row
+    tbody.querySelectorAll<HTMLInputElement>('.mgr-key').forEach((input) => {
+      input.addEventListener('keydown', (e) => {
+        e.preventDefault();
+        input.value = e.key.length === 1 ? e.key.toUpperCase() : e.key;
+        const codeSpan = this.host.querySelector(`[data-output-code="${input.dataset.outputKey}"]`);
+        if (codeSpan) codeSpan.textContent = String(e.keyCode || e.which);
+        input.blur();
+      });
+    });
+    // Enable button
+    this.host.querySelector('[data-mgr-output-enable]')?.addEventListener('click', () => this.enableOutput());
+    this.host.querySelector('[data-mgr-output-disable]')?.addEventListener('click', () => this.disableOutput());
+  }
+
+  private async enableOutput() {
+    if (!tauriInvoke) return;
+    const mapping: Record<string, number> = {};
+    this.host.querySelectorAll<HTMLInputElement>('[data-output-key]').forEach((input) => {
+      const codeSpan = this.host.querySelector(`[data-output-code="${input.dataset.outputKey}"]`);
+      const code = parseInt(codeSpan?.textContent || '0', 10);
+      if (code > 0) mapping[input.dataset.outputKey!] = code;
+    });
+    if (Object.keys(mapping).length === 0) {
+      this.setStatus('output: no keys registered — click a cell and press a key first');
+      return;
+    }
+    await tauriInvoke('set_output', { mapping });
+    this.host.querySelector('[data-mgr-output-enable]')?.setAttribute('hidden', '');
+    this.host.querySelector('[data-mgr-output-disable]')?.removeAttribute('hidden');
+    this.setStatus(`output routing enabled (${Object.keys(mapping).length} switches)`);
+  }
+
+  private async disableOutput() {
+    if (!tauriInvoke) return;
+    await tauriInvoke('set_output', { mapping: null });
+    this.host.querySelector('[data-mgr-output-disable]')?.setAttribute('hidden', '');
+    this.host.querySelector('[data-mgr-output-enable]')?.removeAttribute('hidden');
+    this.setStatus('output routing disabled');
   }
 
   private renderSwitchEditor() {
@@ -776,6 +839,8 @@ style.textContent = `
   .mgr-log { list-style:none; margin:0; padding:0; max-height:200px; overflow:auto; font-family:monospace; font-size:.75rem; }
   .mgr-log li { padding:3px 0; color:#666; border-bottom:1px solid #f5f5f5; }
   .mgr-future { font-size:.7rem; color:#bbb; font-style:italic; }
+  .mgr-hint { font-size:.78rem; color:#888; margin:0 0 10px; line-height:1.4; }
+  .mgr-keycode { font-family:monospace; font-size:.75rem; color:#888; }
   .hd { display:flex; justify-content:space-between; align-items:center; padding:12px 20px; background:#222; color:#fff; }
   .hd h1 { font-size:1.1rem; margin:0; font-weight:600; }
   .hd-right { display:flex; align-items:center; gap:10px; }

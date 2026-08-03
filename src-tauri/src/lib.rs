@@ -23,6 +23,8 @@ struct AppState {
     switches: Vec<String>,
     /// Set when the macOS CGEventTap is installed; clear it to release capture.
     capture_flag: Option<Arc<AtomicBool>>,
+    /// Output routing: switch_id → keycode mapping, active when non-empty.
+    output_mapping: Arc<std::sync::Mutex<Option<std::collections::HashMap<String, u16>>>>,
 }
 
 fn init_tracing() {
@@ -37,6 +39,7 @@ fn init_tracing() {
 /// Frontend-facing snapshot of the embedded broker.
 #[tauri::command]
 fn usahp_status(state: State<'_, AppState>) -> serde_json::Value {
+    let output_active = state.output_mapping.lock().map(|m| m.is_some()).unwrap_or(false);
     serde_json::json!({
         "running": true,
         "port": state.port,
@@ -47,6 +50,7 @@ fn usahp_status(state: State<'_, AppState>) -> serde_json::Value {
             .as_ref()
             .map(|f| f.load(Ordering::Relaxed))
             .unwrap_or(false),
+        "output_active": output_active,
     })
 }
 
@@ -61,6 +65,17 @@ fn set_capture(state: State<'_, AppState>, enabled: bool) {
             "USAHP capture {}",
             if enabled { "resumed" } else { "released" }
         );
+    }
+}
+
+/// Configure output routing: when enabled, the broker's switch events are
+/// translated to OS-level keystrokes so external apps (Grid 3, games) can
+/// receive them. The mapping is switch_id → macOS keycode.
+#[tauri::command]
+fn set_output(state: State<'_, AppState>, mapping: Option<std::collections::HashMap<String, u16>>) {
+    if let Ok(mut m) = state.output_mapping.lock() {
+        *m = mapping;
+        tracing::info!("output routing {}", if m.is_some() { "enabled" } else { "disabled" });
     }
 }
 
@@ -202,11 +217,46 @@ pub fn run() {
                 });
             }
 
+            // Output routing: a second broker client that translates switch_events
+            // to OS-level keystrokes when output mapping is active.
+            let output_mapping: Arc<std::sync::Mutex<Option<std::collections::HashMap<String, u16>>>> =
+                Arc::new(std::sync::Mutex::new(None));
+            let out_broker = broker.clone();
+            let out_mapping = output_mapping.clone();
+            tauri::async_runtime::spawn(async move {
+                let (tx, mut rx) = tokio::sync::mpsc::channel::<std::sync::Arc<usahp_core::ServerMessage>>(16);
+                let (reply, result) = tokio::sync::oneshot::channel();
+                let _ = out_broker
+                    .send(usahp_daemon::broker::BrokerCommand::Register { sender: tx, reply })
+                    .await;
+                let _ = result.await;
+                let _ = rx.recv().await; // hello
+                while let Some(msg) = rx.recv().await {
+                    if let usahp_core::ServerMessage::SwitchEvent(ev) = &*msg {
+                        let map = out_mapping.lock().ok();
+                        if let Some(Some(map)) = map.as_deref() {
+                            if let Some(&keycode) = map.get(&ev.switch_id) {
+                                let is_press = ev.action == usahp_core::Action::Pressed;
+                                #[cfg(target_os = "macos")]
+                                {
+                                    macos_capture::post_keystroke(keycode, is_press);
+                                }
+                                #[cfg(not(target_os = "macos"))]
+                                {
+                                    tracing::warn!("keystroke output not yet implemented on this platform");
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
             app.manage(AppState {
                 broker,
                 port,
                 switches,
                 capture_flag,
+                output_mapping,
             });
 
             // USAHP handoff (software, exclusive_foreground): the frontend drives
@@ -223,7 +273,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![usahp_status, inject_switch, set_capture])
+        .invoke_handler(tauri::generate_handler![usahp_status, inject_switch, set_capture, set_output])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
