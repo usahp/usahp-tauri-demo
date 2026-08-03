@@ -484,7 +484,7 @@ class DemoApp {
       <tr data-row="${i}">
         <td>
           <select data-field="id" class="mgr-input">
-            ${Array.from({length: 8}, (_, n) => `switch_${n + 1}`).map(id =>
+            ${Array.from({length: 16}, (_, n) => `switch_${n + 1}`).map(id =>
               `<option value="${id}" ${id === s.id ? 'selected' : ''}>${id}</option>`
             ).join('')}
           </select>

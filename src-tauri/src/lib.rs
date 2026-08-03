@@ -75,7 +75,8 @@ struct AppState {
     output: Arc<std::sync::Mutex<OutputMode>>,
     /// Monitor client ID (set when the session monitor registers).
     monitor_client_id: Arc<std::sync::Mutex<Option<u64>>>,
-    /// Active session ID (set when a managed session is accepted).
+    /// Active session ID (written by the monitor, read via the heartbeat task).
+    #[allow(dead_code)]
     session_id: Arc<std::sync::Mutex<Option<String>>>,
 }
 
@@ -215,16 +216,6 @@ async fn release_session(state: State<'_, AppState>) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// Whether a managed session is currently active.
-#[tauri::command]
-fn session_active(state: State<'_, AppState>) -> bool {
-    state
-        .session_id
-        .lock()
-        .map(|g| g.is_some())
-        .unwrap_or(false)
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     init_tracing();
@@ -294,9 +285,9 @@ pub fn run() {
                     match usahp_daemon::input::spawn(
                         &config.mappings,
                         broker.clone(),
-                        capture_control.clone(),
+                        _capture_control.clone(),
                     ) {
-                        Ok(()) => Some(CaptureHandle::Core(capture_control.clone())),
+                        Ok(()) => Some(CaptureHandle::Core(_capture_control.clone())),
                         Err(error) => {
                             tracing::error!(%error, "USAHP input backend failed to start");
                             None
@@ -348,7 +339,7 @@ pub fn run() {
                     let hb_broker = mon_broker.clone();
                     let hb_cid = mon_cid.clone();
                     let hb_sid = mon_sid.clone();
-                    tokio::spawn(async move {
+                    let heartbeat = tokio::spawn(async move {
                         let mut interval = tokio::time::interval(Duration::from_millis(500));
                         interval.tick().await; // skip immediate
                         loop {
@@ -359,12 +350,16 @@ pub fn run() {
                             ) else {
                                 continue;
                             };
-                            let _ = hb_broker
+                            if hb_broker
                                 .send(usahp_daemon::broker::BrokerCommand::Heartbeat {
                                     client_id: cid,
                                     session_id: sid,
                                 })
-                                .await;
+                                .await
+                                .is_err()
+                            {
+                                break; // broker closed — stop heartbeat
+                            }
                         }
                     });
 
@@ -437,6 +432,8 @@ pub fn run() {
                             _ => {}
                         }
                     }
+                    // Monitor loop ended (broker channel closed) — stop heartbeat.
+                    heartbeat.abort();
                 });
             }
 
@@ -528,8 +525,7 @@ pub fn run() {
             set_capture,
             set_output,
             claim_session,
-            release_session,
-            session_active
+            release_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
