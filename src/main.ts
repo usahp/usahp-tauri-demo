@@ -150,7 +150,7 @@ class DemoApp {
               </select>
             </label>
             <label class="row"><span>Pace</span><input type="range" min="200" max="2000" step="100" value="900" data-ctrl="rate"/><output data-out="rate">900</output></label>
-            <label class="row"><span>Input mode</span>
+            <label class="row" data-input-mode-row><span>Input mode</span>
               <select data-ctrl="mode"><option value="auto">Auto</option><option value="manual">Manual (step)</option></select>
             </label>
           </fieldset>
@@ -203,13 +203,15 @@ class DemoApp {
     const root = this.host.querySelector('[data-switches]');
     if (!root) return;
     if (this.strategy === 'continuous') {
-      root.innerHTML = `
-        <div class="sw">
-          <span class="sw-key">Space</span>
-          <strong style="flex:1">Select (lock → pick)</strong>
-          <button data-inject="switch_1">Select</button>
-        </div>
-        <p class="hint">Continuous mode: press Select to lock the moving cursor on one axis, then again to select.</p>`;
+      const cont = [
+        { sw: SWITCHES[0], role: 'Select' },
+        { sw: SWITCHES[1], role: 'Cancel' },
+        { sw: SWITCHES[2], role: 'Reset' },
+      ];
+      root.innerHTML =
+        cont
+          .map(({ sw, role }) => `<div class="sw"><span class="sw-key">${sw.key}</span><strong style="flex:1">${role}</strong><button data-inject="${sw.id}">${role}</button></div>`)
+          .join('') + `<p class="hint">Continuous: Select locks / advances the cursor, Cancel restarts.</p>`;
     } else if (this.strategy === 'elimination') {
       // 4 coloured partition buttons (no role select).
       root.innerHTML = SWITCHES.map((s) => `
@@ -249,8 +251,10 @@ class DemoApp {
 
   private applyModeConfig() {
     const orderRow = this.host.querySelector('[data-order-row]') as HTMLElement | null;
+    const inputRow = this.host.querySelector('[data-input-mode-row]') as HTMLElement | null;
     if (this.mode === 'items') {
       if (orderRow) orderRow.hidden = false;
+      if (inputRow) inputRow.hidden = false;
       this.config.set({ scanPattern: this.order as ScanConfig['scanPattern'] });
       if (this.order === 'elimination') {
         // Elimination is press-driven: show all colour partitions at once.
@@ -259,9 +263,12 @@ class DemoApp {
         if (modeSel) modeSel.value = 'manual';
       }
     } else {
-      // A continuous technique — no scan order applies.
+      // Continuous: auto-animate (must be auto, else scheduleNextStep bails and
+      // nothing moves), and scan-order / input-mode don't apply.
       if (orderRow) orderRow.hidden = true;
+      if (inputRow) inputRow.hidden = true;
       this.config.set({ continuousTechnique: this.mode as ScanConfig['continuousTechnique'] });
+      this.config.set({ scanInputMode: 'auto' });
     }
   }
 
@@ -459,8 +466,10 @@ class DemoApp {
       // Each physical switch selects its coloured partition directly.
       for (const s of SWITCHES) bindings[s.id] = { press: `switch-${s.id.slice(-1)}` as SwitchAction };
     } else if (this.strategy === 'continuous') {
-      // One switch: press to lock X / advance stages.
+      // Select locks/advances; Cancel restarts; Reset clears.
       bindings['switch_1'] = { press: 'select' };
+      bindings['switch_2'] = { press: 'cancel' };
+      bindings['switch_3'] = { press: 'reset' };
     } else {
       for (const s of SWITCHES) bindings[s.id] = { press: s.role };
     }
