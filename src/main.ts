@@ -282,7 +282,7 @@ class DemoApp {
     this.cells.length = 0;
     this.items.forEach((label, i) => {
       const cell = document.createElement('button');
-      cell.className = 'cell';
+      cell.className = 'cell grid-cell';
       cell.dataset.index = String(i);
       cell.textContent = label;
       grid.appendChild(cell);
@@ -516,6 +516,7 @@ function mutableConfig(initial: ScanConfig) {
 
 const style = document.createElement('style');
 style.textContent = `
+  [hidden] { display: none !important; }
   .hd { display:flex; justify-content:space-between; align-items:center; padding:12px 20px; background:#222; color:#fff; }
   .hd h1 { font-size:1.1rem; margin:0; font-weight:600; }
   .hd-right { display:flex; align-items:center; gap:10px; }
