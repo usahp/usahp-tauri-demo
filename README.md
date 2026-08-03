@@ -48,7 +48,11 @@ The embedded broker serves `ws://127.0.0.1:7312`. Default mappings: `Space`/`Ret
 
 By default the app captures switch keys **in the webview** and routes them through the embedded broker (`KeyboardAdapter` → `inject_switch` → broker → `UsahpAdapter`). This needs window focus, not system-wide, but works everywhere with no permissions.
 
-The broker's own **system-wide `rdev` grab is disabled.** On macOS, `rdev`'s event-tap callback calls HIToolbox TextServices (`TSMGetInputSourceProperty`) off the main thread, which asserts and **traps (`SIGTRAP`) on the first captured key — crashing the app**. That's an `rdev`/macOS bug, not ours. Set `USAHP_GRAB=1` to try the real grab (viable on Linux/Windows; macOS needs an rdev fix or a usahp-side capture rewrite). When that's fixed, the demo can switch back to true global capture.
+The broker's own system-wide grab is **disabled by default.** On macOS, `rdev`'s event-tap callback calls HIToolbox TextServices (`TSMGetInputSourceProperty`) off the main thread, which asserts and **traps (`SIGTRAP`) on the first captured key — crashing the app**. That's an `rdev`/macOS bug, not ours.
+
+Set **`USAHP_GRAB=1`** to enable real system-wide capture:
+- **macOS:** uses a native `CGEventTap` (`src-tauri/src/macos_capture.rs`) that reads only keycodes — no TextServices, no trap — and suppresses captured keys. Requires Accessibility permission (grant it, then restart the app). This is the proper fix; contributions to upstream `rdev` are still welcome.
+- **Linux/Windows:** uses `usahp`'s `rdev`/`evdev` grab (the trap is macOS-only).
 
 ## Notes
 

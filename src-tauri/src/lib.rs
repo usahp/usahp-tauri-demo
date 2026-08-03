@@ -8,6 +8,9 @@
 use tauri::{Manager, State};
 use tokio::sync::mpsc;
 
+#[cfg(target_os = "macos")]
+mod macos_capture;
+
 const EMBEDDED_CONFIG: &str = include_str!("../resources/default-config.toml");
 
 /// Handle on the running broker so (later) commands can inject events.
@@ -118,8 +121,17 @@ pub fn run() {
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false)
             {
-                if let Err(error) = usahp_daemon::input::spawn(&config.mappings, broker.clone()) {
-                    tracing::error!(%error, "USAHP input backend failed to start");
+                // On macOS use the native CGEventTap (rdev's macOS grab traps in
+                // TextServices on the first key). Elsewhere use usahp's rdev/evdev.
+                #[cfg(target_os = "macos")]
+                {
+                    macos_capture::spawn(&config.mappings, broker.clone());
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    if let Err(error) = usahp_daemon::input::spawn(&config.mappings, broker.clone()) {
+                        tracing::error!(%error, "USAHP input backend failed to start");
+                    }
                 }
             } else {
                 tracing::info!(
