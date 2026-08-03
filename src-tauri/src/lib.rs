@@ -195,13 +195,17 @@ pub fn run() {
                 {
                     macos_capture::spawn(&config.mappings, broker.clone())
                 }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    if let Err(error) = usahp_daemon::input::spawn(&config.mappings, broker.clone()) {
-                        tracing::error!(%error, "USAHP input backend failed to start");
-                    }
-                    None
-                }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Err(error) = usahp_daemon::input::spawn(
+            &config.mappings,
+            broker.clone(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        ) {
+            tracing::error!(%error, "USAHP input backend failed to start");
+        }
+        None
+    }
             } else {
                 tracing::info!(
                     "USAHP OS grab disabled (set USAHP_GRAB=1 to enable). Capture is via the \
@@ -330,16 +334,17 @@ fn grid3_send(switch_num: u32, press: bool) {
         RegisterWindowMessageA, SendNotifyMessageA, HWND_BROADCAST,
     };
     use windows::core::PCSTR;
+    use windows::Win32::Foundation::{WPARAM, LPARAM};
     use std::sync::OnceLock;
 
     static MSG: OnceLock<u32> = OnceLock::new();
     let msg = *MSG.get_or_init(|| {
         unsafe {
-            RegisterWindowMessageA(PCSTR(b"Sensory_SwitchInput\0".as_ptr())).0 as u32
+            RegisterWindowMessageA(PCSTR(b"Sensory_SwitchInput\0".as_ptr())).0
         }
     });
     unsafe {
-        SendNotifyMessageA(
+        let _ = SendNotifyMessageA(
             HWND_BROADCAST,
             msg,
             WPARAM(switch_num as usize),
