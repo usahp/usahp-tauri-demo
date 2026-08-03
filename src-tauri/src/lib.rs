@@ -403,6 +403,27 @@ pub fn run() {
                                 let _ = mon_win
                                     .emit("usahp-session-event", format!("Session revoked: {reason}"));
                             }
+                            usahp_core::ServerMessage::SwitchEvent(ev) => {
+                                // Only forward when we hold the session (exclusive
+                                // mode). In passive mode the UsahpAdapter already
+                                // receives these via WebSocket.
+                                let has_session = mon_sid
+                                    .lock()
+                                    .map(|g| g.is_some())
+                                    .unwrap_or(false);
+                                if has_session {
+                                    let _ = mon_win.emit(
+                                        "usahp-switch-event",
+                                        serde_json::json!({
+                                            "switch_id": ev.switch_id,
+                                            "action": match ev.action {
+                                                usahp_core::Action::Pressed => "pressed",
+                                                usahp_core::Action::Released => "released",
+                                            },
+                                        }),
+                                    );
+                                }
+                            }
                             _ => {}
                         }
                     }

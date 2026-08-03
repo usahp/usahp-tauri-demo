@@ -752,6 +752,17 @@ class DemoApp {
       });
     }
 
+      // When a managed session is active, the monitor forwards switch events
+      // via Tauri (the UsahpAdapter's WebSocket stops receiving in exclusive
+      // mode). Feed them to the engine directly.
+      if (tauriListen) {
+        tauriListen('usahp-switch-event', (e) => {
+          const { switch_id, action } = e.payload as { switch_id: string; action: string };
+          if (action === 'pressed') this.engine.press(switch_id, 'usahp');
+          else if (action === 'released') this.engine.release(switch_id, 'usahp');
+        });
+      }
+
     const capBtn = this.host.querySelector('[data-capture]') as HTMLButtonElement | null;
       capBtn?.addEventListener('click', () => { this.paused = !this.paused; this.updateCapture(); });
     }
