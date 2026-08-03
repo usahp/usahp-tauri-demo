@@ -206,6 +206,15 @@ class DemoApp {
           </div>
         </section>
         <section class="mgr-section">
+          <h3>Failsafe config</h3>
+          <dl class="mgr-grid">
+            <div><dt>Heartbeat interval</dt><dd>500 ms</dd></div>
+            <div><dt>Missed heartbeat limit</dt><dd>3 (1.5 s timeout)</dd></div>
+            <div><dt>Escape hold (Trigger A)</dt><dd>4000 ms <span class="mgr-future">(future)</span></dd></div>
+            <div><dt>Arbitration timeout</dt><dd>15 s <span class="mgr-future">(Stage 3)</span></dd></div>
+          </dl>
+        </section>
+        <section class="mgr-section">
           <h3>Session log</h3>
           <ul class="mgr-log" data-mgr-sessionlog></ul>
         </section>
@@ -583,7 +592,20 @@ class DemoApp {
       if (tauriListen) {
         tauriListen('usahp-focus', (e) => { this.focused = !!e.payload; this.updateCapture(); });
       }
-      const capBtn = this.host.querySelector('[data-capture]') as HTMLButtonElement | null;
+      // Listen for session lifecycle events from the backend monitor.
+    if (tauriListen) {
+      tauriListen('usahp-session-event', (e) => {
+        const log = this.host.querySelector('[data-mgr-sessionlog]');
+        if (!log) return;
+        const li = document.createElement('li');
+        const t = new Date().toLocaleTimeString();
+        li.textContent = `${t} — ${e.payload}`;
+        log.prepend(li);
+        while (log.children.length > 20) log.removeChild(log.lastChild!);
+      });
+    }
+
+    const capBtn = this.host.querySelector('[data-capture]') as HTMLButtonElement | null;
       capBtn?.addEventListener('click', () => { this.paused = !this.paused; this.updateCapture(); });
     }
 
@@ -753,6 +775,7 @@ style.textContent = `
   .mgr-apply:hover { background:#0f6b47; }
   .mgr-log { list-style:none; margin:0; padding:0; max-height:200px; overflow:auto; font-family:monospace; font-size:.75rem; }
   .mgr-log li { padding:3px 0; color:#666; border-bottom:1px solid #f5f5f5; }
+  .mgr-future { font-size:.7rem; color:#bbb; font-style:italic; }
   .hd { display:flex; justify-content:space-between; align-items:center; padding:12px 20px; background:#222; color:#fff; }
   .hd h1 { font-size:1.1rem; margin:0; font-weight:600; }
   .hd-right { display:flex; align-items:center; gap:10px; }

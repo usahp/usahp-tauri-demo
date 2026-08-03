@@ -113,7 +113,8 @@ pub fn run() {
             // they need a current runtime — block_on enters it and still lets
             // us return the broker handle synchronously.
             let broker = tauri::async_runtime::block_on(async {
-                let broker = usahp_daemon::broker::spawn(config.mappings.clone());
+                let capture = usahp_daemon::input::CaptureControl::new_enabled();
+                let broker = usahp_daemon::broker::spawn(config.mappings.clone(), capture);
                 let server_broker = broker.clone();
                 tauri::async_runtime::spawn(async move {
                     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
@@ -162,6 +163,44 @@ pub fn run() {
                 );
                 None
             };
+
+            // Session event monitor: register the backend as a broker client
+            // and forward session lifecycle events (HandshakeResponse,
+            // SessionRevoked) to the frontend via Tauri events.
+            if let Some(window) = app.get_webview_window("main") {
+                let mon_broker = broker.clone();
+                let mon_win = window.clone();
+                tauri::async_runtime::spawn(async move {
+                    let (tx, mut rx) = tokio::sync::mpsc::channel::<std::sync::Arc<usahp_core::ServerMessage>>(16);
+                    let (reply, result) = tokio::sync::oneshot::channel();
+                    let _ = mon_broker
+                        .send(usahp_daemon::broker::BrokerCommand::Register {
+                            sender: tx,
+                            reply,
+                        })
+                        .await;
+                    let _ = result.await;
+                    // Drain hello (we don't need it for monitoring).
+                    let _ = rx.recv().await;
+                    while let Some(msg) = rx.recv().await {
+                        match &*msg {
+                            usahp_core::ServerMessage::HandshakeResponse(resp) => {
+                                let _ = mon_win.emit("usahp-session-event", format!(
+                                    "Handshake: {:?}",
+                                    resp
+                                ));
+                            }
+                            usahp_core::ServerMessage::SessionRevoked(rev) => {
+                                let _ = mon_win.emit("usahp-session-event", format!(
+                                    "Session revoked: {:?}",
+                                    rev.reason
+                                ));
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+            }
 
             app.manage(AppState {
                 broker,

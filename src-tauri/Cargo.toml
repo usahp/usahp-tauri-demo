@@ -25,8 +25,8 @@ serde_json = "1"
 # Embedded USAHP broker. Git dep on upstream so the public repo builds for
 # anyone; pinned to a rev. Bump after OwenMcGirr/usahp#3 (confidence) merges.
 # For local iteration, `[patch.crates-io]` or a local path override works.
-usahp-core = { git = "https://github.com/OwenMcGirr/usahp.git", rev = "fa979676433f63533fee9efe0a4c9ccfa1dfbc48" }
-usahp-daemon = { git = "https://github.com/OwenMcGirr/usahp.git", rev = "fa979676433f63533fee9efe0a4c9ccfa1dfbc48" }
+usahp-core = { git = "https://github.com/OwenMcGirr/usahp.git", rev = "3636e3c507ef08044cc5cff8f872a9f2a67fe0d9" }
+usahp-daemon = { git = "https://github.com/OwenMcGirr/usahp.git", rev = "3636e3c507ef08044cc5cff8f872a9f2a67fe0d9" }
 tokio = { version = "1", features = ["net", "rt-multi-thread", "sync", "macros"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

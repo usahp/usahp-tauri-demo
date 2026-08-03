@@ -4503,7 +4503,7 @@ dependencies = [
 [[package]]
 name = "usahp-core"
 version = "0.1.0"
-source = "git+https://github.com/OwenMcGirr/usahp.git?rev=fa979676433f63533fee9efe0a4c9ccfa1dfbc48#fa979676433f63533fee9efe0a4c9ccfa1dfbc48"
+source = "git+https://github.com/OwenMcGirr/usahp.git?rev=3636e3c507ef08044cc5cff8f872a9f2a67fe0d9#3636e3c507ef08044cc5cff8f872a9f2a67fe0d9"
 dependencies = [
  "serde",
  "thiserror 2.0.19",
@@ -4513,10 +4513,12 @@ dependencies = [
 [[package]]
 name = "usahp-daemon"
 version = "0.1.0"
-source = "git+https://github.com/OwenMcGirr/usahp.git?rev=fa979676433f63533fee9efe0a4c9ccfa1dfbc48#fa979676433f63533fee9efe0a4c9ccfa1dfbc48"
+source = "git+https://github.com/OwenMcGirr/usahp.git?rev=3636e3c507ef08044cc5cff8f872a9f2a67fe0d9#3636e3c507ef08044cc5cff8f872a9f2a67fe0d9"
 dependencies = [
  "anyhow",
  "clap",
+ "core-foundation 0.10.1",
+ "core-graphics 0.25.0",
  "evdev",
  "futures-util",
  "rdev",
@@ -4526,6 +4528,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "usahp-core",
+ "uuid",
 ]
 
 [[package]]
