@@ -158,12 +158,14 @@ async fn inject_switch(
     } else {
         usahp_core::Action::Released
     };
+    let confidence = if pressed { Some(100.0) } else { Some(0.0) };
     state
         .broker
         .send(usahp_daemon::broker::BrokerCommand::Input(
             usahp_daemon::broker::PhysicalEvent {
                 mapping_id: switch_id,
                 action,
+                confidence,
             },
         ))
         .await
@@ -257,6 +259,11 @@ pub fn run() {
                 None
             };
 
+            // macOS: watch frontmost application for focus-driven session
+            // revocation (Stage 2). No-op if no managed session is active.
+            #[cfg(target_os = "macos")]
+            usahp_daemon::focus_watcher::spawn(broker.clone());
+
             // Session event monitor: register the backend as a broker client
             // and forward session lifecycle events (HandshakeResponse,
             // SessionRevoked) to the frontend via Tauri events.
@@ -280,10 +287,25 @@ pub fn run() {
                                     .emit("usahp-session-event", format!("Handshake: {:?}", resp));
                             }
                             usahp_core::ServerMessage::SessionRevoked(rev) => {
-                                let _ = mon_win.emit(
-                                    "usahp-session-event",
-                                    format!("Session revoked: {:?}", rev.reason),
-                                );
+                                let reason = match rev.reason {
+                                    usahp_core::SessionRevocationReason::EscapeHatch => {
+                                        "Escape hatch — switch held > 4s"
+                                    }
+                                    usahp_core::SessionRevocationReason::FocusLost => {
+                                        "Focus lost — another app came to front"
+                                    }
+                                    usahp_core::SessionRevocationReason::HeartbeatTimeout => {
+                                        "Heartbeat timeout"
+                                    }
+                                    usahp_core::SessionRevocationReason::QueueOverflow => {
+                                        "Queue overflow"
+                                    }
+                                    usahp_core::SessionRevocationReason::ExplicitRevocation => {
+                                        "Explicitly revoked"
+                                    }
+                                };
+                                let _ = mon_win
+                                    .emit("usahp-session-event", format!("Session revoked: {reason}"));
                             }
                             _ => {}
                         }

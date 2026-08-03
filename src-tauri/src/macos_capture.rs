@@ -124,12 +124,17 @@ pub fn spawn(mappings: &[Mapping], broker: mpsc::Sender<BrokerCommand>) -> Optio
                         CGEventType::KeyUp => Action::Released,
                         _ => return CallbackResult::Keep,
                     };
+                    let confidence = match action {
+                        Action::Pressed => Some(100.0),
+                        Action::Released => Some(0.0),
+                    };
                     if let Some(ids) = by_key.get(&keycode) {
                         for id in ids {
                             if broker
                                 .blocking_send(BrokerCommand::Input(PhysicalEvent {
                                     mapping_id: id.clone(),
                                     action,
+                                    confidence,
                                 }))
                                 .is_err()
                             {
