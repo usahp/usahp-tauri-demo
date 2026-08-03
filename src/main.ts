@@ -95,6 +95,7 @@ class DemoApp {
   private captureInstalled = false;
   private focused = true;
   private paused = false;
+  private handoffMode: 'focus' | 'always' | 'off' = 'focus';
   private overlay: ContinuousOverlay | null = null;
   private dwell = new Map<string, { count: number; total: number; last: number }>();
   private presses: number[] = [];
@@ -157,6 +158,16 @@ class DemoApp {
               <select data-ctrl="mode"><option value="auto">Auto</option><option value="manual">Manual (step)</option></select>
             </label>
           </fieldset>
+          <fieldset><legend>USAHP routing</legend>
+            <label class="row"><span>Handoff</span>
+              <select data-ctrl="handoff">
+                <option value="focus">Focus (exclusive_foreground)</option>
+                <option value="always">Always (primary_controller)</option>
+                <option value="off">Released (passive)</option>
+              </select>
+            </label>
+            <div class="usahp-info" data-usahp-info></div>
+          </fieldset>
           <fieldset><legend>Switches (routed through USAHP)</legend>
             <div class="switches" data-switches></div>
             <p class="hint">In Tauri these keys are grabbed by the broker; tap a button to inject the same way. Roles can be reassigned.</p>
@@ -190,6 +201,10 @@ class DemoApp {
         this.renderSwitchPanel();
       }
       else if (ctrl === 'mode') { this.config.set({ scanInputMode: t.value as ScanConfig['scanInputMode'] }); }
+      else if (ctrl === 'handoff') {
+        this.handoffMode = t.value as 'focus' | 'always' | 'off';
+        this.updateCapture();
+      }
     });
     this.host.addEventListener('input', (e) => {
       const t = e.target as HTMLInputElement;
@@ -399,7 +414,12 @@ class DemoApp {
     // to the OS / Switch Control. A Pause button overrides (hold capture off).
     if (tauriInvoke) {
       tauriInvoke('usahp_status').then((s) => {
-        this.captureInstalled = !!(s as { capture_installed?: boolean }).capture_installed;
+        const st = s as { capture_installed?: boolean; port?: number; switches?: string[]; running?: boolean };
+        this.captureInstalled = !!st.capture_installed;
+        const info = this.host.querySelector('[data-usahp-info]');
+        if (info && st.running) {
+          info.textContent = `ws://127.0.0.1:${st.port ?? 7312} · ${(st.switches ?? []).length} switches registered`;
+        }
         if (this.captureInstalled) {
           const btn = this.host.querySelector('[data-capture]') as HTMLButtonElement | null;
           if (btn) btn.hidden = false;
@@ -497,13 +517,32 @@ class DemoApp {
 
   private async updateCapture() {
     if (!this.captureInstalled) return;
-    const effective = this.focused && !this.paused;
+    let effective: boolean;
+    let label: string;
+    let color: string;
+    if (this.paused) {
+      effective = false;
+      label = '⏸ Paused';
+      color = '#ff9800';
+    } else if (this.handoffMode === 'off') {
+      effective = false;
+      label = '○ Released';
+      color = '#999';
+    } else if (this.handoffMode === 'always') {
+      effective = true;
+      label = '● Always (primary)';
+      color = '#4caf50';
+    } else {
+      effective = this.focused;
+      label = this.focused ? '● App control' : '○ System';
+      color = this.focused ? '#4caf50' : '#999';
+    }
     if (tauriInvoke) await tauriInvoke('set_capture', { enabled: effective });
     const ind = this.host.querySelector('[data-capture-state]') as HTMLElement | null;
     if (ind) {
       ind.hidden = false;
-      ind.textContent = this.paused ? '⏸ Paused' : this.focused ? '● App control' : '○ System';
-      ind.style.color = this.paused ? '#ff9800' : this.focused ? '#4caf50' : '#999';
+      ind.textContent = label;
+      ind.style.color = color;
     }
     const btn = this.host.querySelector('[data-capture]') as HTMLButtonElement | null;
     if (btn) btn.textContent = this.paused ? 'Resume' : 'Pause';
@@ -567,6 +606,7 @@ style.textContent = `
   .sw button { padding:6px 10px; border:1px solid #ccc; border-radius:6px; background:#fafafa; cursor:pointer; }
   .sw button:active { background:#ff9800; color:#fff; }
   .hint { font-size:.72rem; color:#999; margin:.4em 0 0; line-height:1.3; }
+  .usahp-info { font-size:.72rem; color:#888; margin-top:4px; font-family:monospace; }
   .activity { list-style:none; margin:0; padding:0; max-height:130px; overflow:auto; font-family:monospace; font-size:.72rem; }
   .activity li { padding:2px 0; color:#888; border-bottom:1px solid #f2f2f2; }
   .act-press { color:#2196f3; }
