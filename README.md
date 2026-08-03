@@ -1,6 +1,6 @@
 # usahp-tauri-demo
 
-A cross-platform desktop demo that embeds the [USAHP](https://github.com/OwenMcGirr/usahp) v0.2 switch-event broker **in-process** inside a [Tauri 2](https://tauri.app) app, with a switch-scanner webview built on the published [`scan-engine`](https://www.npmjs.com/package/scan-engine) + [`switch-input`](https://www.npmjs.com/package/switch-input) packages.
+A cross-platform desktop demo that embeds the [USAHP](https://github.com/usahp/usahp-core) v0.2 switch-event broker **in-process** inside a [Tauri 2](https://tauri.app) app, with a switch-scanner webview built on the published [`scan-engine`](https://www.npmjs.com/package/scan-engine) + [`switch-input`](https://www.npmjs.com/package/switch-input) packages.
 
 > Proves the chain end to end: **physical switch → embedded Rust broker → loopback WebSocket → scanner UI**, with no separate daemon binary to install. On-screen switch buttons route through the broker too, via a Tauri command.
 
@@ -116,7 +116,7 @@ The focus-based handoff (exclusive_foreground from RFC §6.5.1) is wired: focus 
 
 ## Related
 
-- [USAHP specification](https://github.com/OwenMcGirr/usahp/docs/spec) — RFC + plain English
-- [USAHP docs site](https://owenmcgirr.github.io/usahp/) — VitePress
+- [USAHP specification](https://usahp.github.io/usahp-core/spec) — RFC + plain English
+- [USAHP docs site](https://usahp.github.io/usahp-core/) — VitePress
 - [scan-engine-lab](https://github.com/willwade/scan-engine-lab) — the scanning engine + `switch-input` npm packages
 - [Build plan](https://github.com/AACTools/usahp-spec/blob/main/USAHP-Tauri-Demo-Build-Plan.md) — phased plan with decision log
