@@ -196,7 +196,14 @@ class DemoApp {
         </section>
         <section class="mgr-section">
           <h3>Switch mappings</h3>
-          <table class="mgr-table" data-mgr-mappings></table>
+          <table class="mgr-table">
+            <thead><tr><th>Switch</th><th>Key (click to register)</th><th>Role</th><th></th></tr></thead>
+            <tbody data-mgr-rows></tbody>
+          </table>
+          <div class="mgr-actions">
+            <button class="mgr-btn" data-mgr-add>Add switch</button>
+            <button class="mgr-btn mgr-apply" data-mgr-apply>Apply changes</button>
+          </div>
         </section>
         <section class="mgr-section">
           <h3>Session log</h3>
@@ -306,6 +313,13 @@ class DemoApp {
     });
     const refreshBtn = this.host.querySelector('[data-mgr-refresh]');
     refreshBtn?.addEventListener('click', () => this.refreshManager());
+    this.host.querySelector('[data-mgr-add]')?.addEventListener('click', () => {
+      const nextNum = SWITCHES.length + 1;
+      if (nextNum > 8) return;
+      SWITCHES.push({ id: `switch_${nextNum}`, code: '', role: 'select', key: '' });
+      this.renderSwitchEditor();
+    });
+    this.host.querySelector('[data-mgr-apply]')?.addEventListener('click', () => this.applySwitchEditor());
   }
 
   private async refreshManager() {
@@ -322,14 +336,83 @@ class DemoApp {
     set('port', String(st.port ?? 7312));
     set('capture', st.capture_installed ? (st.capturing ? '● Active' : '⏸ Paused') : 'Webview');
     set('switches', (st.switches ?? []).join(', ') || '—');
-    const table = this.host.querySelector('[data-mgr-mappings]');
-    if (table) {
-      const sw = st.switches ?? [];
-      table.innerHTML = `<tr><th>Switch</th><th>Key</th></tr>` +
-        sw.map((id) => {
-          const sw = SWITCHES.find((s) => s.id === id);
-          return `<tr><td>${id}</td><td>${sw?.key ?? '—'}</td></tr>`;
-        }).join('');
+    this.renderSwitchEditor();
+  }
+
+  private renderSwitchEditor() {
+    const tbody = this.host.querySelector('[data-mgr-rows]');
+    if (!tbody) return;
+    const roles: Role[] = ['select', 'step', 'reset', 'cancel'];
+    tbody.innerHTML = SWITCHES.map((s, i) => `
+      <tr data-row="${i}">
+        <td>
+          <select data-field="id" class="mgr-input">
+            ${Array.from({length: 8}, (_, n) => `switch_${n + 1}`).map(id =>
+              `<option value="${id}" ${id === s.id ? 'selected' : ''}>${id}</option>`
+            ).join('')}
+          </select>
+        </td>
+        <td><input data-field="code" class="mgr-input mgr-key" value="${s.code}" placeholder="click, then press a key"/></td>
+        <td>
+          <select data-field="role" class="mgr-input">
+            ${roles.map(r => `<option value="${r}" ${r === s.role ? 'selected' : ''}>${r}</option>`).join('')}
+          </select>
+        </td>
+        <td><button class="mgr-x" data-mgr-remove="${i}">✕</button></td>
+      </tr>`).join('');
+
+    // "Click to register" on key inputs — capture one keydown, set event.code.
+    tbody.querySelectorAll<HTMLInputElement>('.mgr-key').forEach((input) => {
+      input.addEventListener('keydown', (e) => {
+        e.preventDefault();
+        input.value = e.code;
+        input.blur();
+      });
+    });
+
+    // Remove buttons
+    tbody.querySelectorAll('[data-mgr-remove]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt((btn as HTMLElement).dataset.mgrRemove!, 10);
+        SWITCHES.splice(idx, 1);
+        this.renderSwitchEditor();
+      });
+    });
+  }
+
+  private applySwitchEditor() {
+    const rows = this.host.querySelectorAll('[data-row]');
+    const updated: typeof SWITCHES = [];
+    rows.forEach((row) => {
+      const el = row as HTMLElement;
+      const id = (el.querySelector('[data-field="id"]') as HTMLSelectElement).value;
+      const code = (el.querySelector('[data-field="code"]') as HTMLInputElement).value;
+      const role = (el.querySelector('[data-field="role"]') as HTMLSelectElement).value as Role;
+      updated.push({ id, code, role, key: code });
+    });
+    SWITCHES.length = 0;
+    SWITCHES.push(...updated);
+    // Rebuild keyboard adapter + bindings + switch panel with the new mappings.
+    this.rebuildKeyboard();
+    this.reconnectBindings();
+    this.renderSwitchPanel();
+    this.refreshManager();
+  }
+
+  private rebuildKeyboard() {
+    this.keyboard?.detach();
+    const keyMap: Record<string, string> = {};
+    for (const s of SWITCHES) keyMap[s.code] = s.id;
+    if (inject) {
+      const brokerPort: SwitchInputPort = {
+        press: (id: string) => { void inject(id, true); },
+        release: (id: string) => { void inject(id, false); },
+        disconnect: () => {},
+        suspend: () => {},
+      };
+      this.keyboard = new KeyboardAdapter(window, brokerPort, keyMap, { preventDefaultOnBound: true });
+    } else {
+      this.keyboard = new KeyboardAdapter(window, this.engine, keyMap, { preventDefaultOnBound: true });
     }
   }
 
@@ -658,6 +741,16 @@ style.textContent = `
   .mgr-table th { color:#888; font-weight:600; }
   .mgr-refresh { margin-top:12px; padding:6px 16px; border:1px solid #16845b; border-radius:6px; background:#16845b; color:#fff; cursor:pointer; font-size:.85rem; }
   .mgr-refresh:hover { background:#0f6b47; }
+  .mgr-input { padding:4px 8px; border:1px solid #ddd; border-radius:4px; font-size:.82rem; width:100%; box-sizing:border-box; }
+  .mgr-key { font-family:monospace; cursor:pointer; }
+  .mgr-key:focus { border-color:#16845b; outline:none; }
+  .mgr-x { padding:2px 8px; border:none; background:transparent; color:#f44336; cursor:pointer; font-size:1rem; }
+  .mgr-x:hover { background:#ffe0e0; border-radius:4px; }
+  .mgr-actions { display:flex; gap:8px; margin-top:10px; }
+  .mgr-btn { padding:6px 14px; border:1px solid #ccc; border-radius:6px; background:#f8f8f8; cursor:pointer; font-size:.85rem; }
+  .mgr-btn:hover { background:#f0f0f0; }
+  .mgr-apply { background:#16845b; color:#fff; border-color:#16845b; }
+  .mgr-apply:hover { background:#0f6b47; }
   .mgr-log { list-style:none; margin:0; padding:0; max-height:200px; overflow:auto; font-family:monospace; font-size:.75rem; }
   .mgr-log li { padding:3px 0; color:#666; border-bottom:1px solid #f5f5f5; }
   .hd { display:flex; justify-content:space-between; align-items:center; padding:12px 20px; background:#222; color:#fff; }
