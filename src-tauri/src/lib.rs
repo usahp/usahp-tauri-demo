@@ -30,6 +30,7 @@ enum OutputMode {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 enum CaptureHandle {
     Core(usahp_daemon::input::CaptureControl),
     #[cfg(target_os = "macos")]
@@ -214,6 +215,16 @@ async fn release_session(state: State<'_, AppState>) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Whether a managed session is currently active.
+#[tauri::command]
+fn session_active(state: State<'_, AppState>) -> bool {
+    state
+        .session_id
+        .lock()
+        .map(|g| g.is_some())
+        .unwrap_or(false)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     init_tracing();
@@ -239,7 +250,7 @@ pub fn run() {
             // broker::spawn and server::serve call tokio::spawn internally, so
             // they need a current runtime — block_on enters it and still lets
             // us return the broker handle synchronously.
-            let (broker, capture_control) = tauri::async_runtime::block_on(async {
+            let (broker, _capture_control) = tauri::async_runtime::block_on(async {
                 let capture = usahp_daemon::input::CaptureControl::new_enabled();
                 let broker = usahp_daemon::broker::spawn(config.mappings.clone(), capture.clone());
                 let server_broker = broker.clone();
@@ -264,14 +275,13 @@ pub fn run() {
                 (broker, capture)
             });
 
-            // OS-level switch capture is OFF by default (capture happens in the
-            // webview → inject_switch). Set USAHP_GRAB=1 for real system-wide
-            // capture: a native CGEventTap on macOS (rdev's grab traps in
-            // TextServices), or usahp's rdev/evdev on Linux/Windows. The flag
-            // returned here lets `set_capture` pause/resume the backend at runtime.
+            // OS-level switch capture is ON by default: a native CGEventTap
+            // on macOS (rdev's grab traps in TextServices), or usahp's
+            // rdev/evdev on Linux/Windows. Set USAHP_GRAB=0 to disable for
+            // webview-only inject mode during development.
             let capture: Option<CaptureHandle> = if std::env::var("USAHP_GRAB")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false)
+                .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+                .unwrap_or(true)
             {
                 // On macOS use the native CGEventTap (rdev's macOS grab traps in
                 // TextServices on the first key). Elsewhere use usahp's rdev/evdev.
@@ -295,7 +305,7 @@ pub fn run() {
                 }
             } else {
                 tracing::info!(
-                    "USAHP OS grab disabled (set USAHP_GRAB=1 to enable). Capture is via the \
+                    "USAHP OS grab disabled (USAHP_GRAB=0). Capture is via the \
                      webview → inject_switch."
                 );
                 None
@@ -518,7 +528,8 @@ pub fn run() {
             set_capture,
             set_output,
             claim_session,
-            release_session
+            release_session,
+            session_active
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
