@@ -37,6 +37,32 @@ fn usahp_status(state: State<'_, AppState>) -> serde_json::Value {
     })
 }
 
+/// Inject a switch edge into the embedded broker (used by on-screen buttons so
+/// they route through USAHP like physical keys do). mapping id == switch id in
+/// the demo config, so the client addresses a switch directly.
+#[tauri::command]
+async fn inject_switch(
+    state: State<'_, AppState>,
+    switch_id: String,
+    pressed: bool,
+) -> Result<(), String> {
+    let action = if pressed {
+        usahp_core::Action::Pressed
+    } else {
+        usahp_core::Action::Released
+    };
+    state
+        .broker
+        .send(usahp_daemon::broker::BrokerCommand::Input(
+            usahp_daemon::broker::PhysicalEvent {
+                mapping_id: switch_id,
+                action,
+            },
+        ))
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     init_tracing();
@@ -94,7 +120,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![usahp_status])
+        .invoke_handler(tauri::generate_handler![usahp_status, inject_switch])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

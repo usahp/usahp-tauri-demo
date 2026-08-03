@@ -8,14 +8,30 @@
 port = 7312
 client_queue_capacity = 256
 
+# Demo switches. mapping id == switch_id so on-screen button injection can
+# address a switch directly. These keys are grabbed system-wide by rdev while
+# the app holds the OS input permission (Accessibility on macOS).
 [[mappings]]
-id = "space"
+id = "switch_1"
 switch_id = "switch_1"
 input = "keyboard"
 code = "Space"
 
 [[mappings]]
-id = "enter"
-switch_id = "switch_1"
+id = "switch_2"
+switch_id = "switch_2"
 input = "keyboard"
 code = "Return"
+
+[[mappings]]
+id = "switch_3"
+switch_id = "switch_3"
+input = "keyboard"
+code = "LeftArrow"
+
+[[mappings]]
+id = "switch_4"
+switch_id = "switch_4"
+input = "keyboard"
+code = "RightArrow"
+

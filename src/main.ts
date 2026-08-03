@@ -1,0 +1,306 @@
+/**
+ * USAHP demo — a single switch scanner whose inputs route through the USAHP
+ * broker. Uses the published scan-engine class API (v0.1.x).
+ *
+ * In Tauri: the embedded broker grabs keys system-wide; the UsahpAdapter
+ * receives them. On-screen switch buttons call inject_switch so they route
+ * through the broker too — one unified path.
+ *
+ * In a plain browser (no broker): a KeyboardAdapter + the on-screen buttons
+ * drive the GestureEngine directly, so the same UI is testable without Tauri.
+ */
+import {
+  RowColumnScanner,
+  LinearScanner,
+  SnakeScanner,
+  QuadrantScanner,
+  type Scanner,
+  type ScanConfig,
+  type ScanConfigProvider,
+  type ScanSurface,
+  type SwitchAction,
+} from 'scan-engine';
+import { GestureEngine, UsahpAdapter, KeyboardAdapter, connectToScanner, type SwitchBindings } from 'switch-input';
+
+type Role = 'select' | 'step' | 'reset' | 'cancel';
+type StrategyId = 'row-column' | 'linear' | 'snake' | 'quadrant';
+
+const STRATEGY_CLASSES: Record<StrategyId, new (s: ScanSurface, c: ScanConfigProvider) => Scanner> = {
+  'row-column': RowColumnScanner as unknown as new (s: ScanSurface, c: ScanConfigProvider) => Scanner,
+  linear: LinearScanner as unknown as new (s: ScanSurface, c: ScanConfigProvider) => Scanner,
+  snake: SnakeScanner as unknown as new (s: ScanSurface, c: ScanConfigProvider) => Scanner,
+  quadrant: QuadrantScanner as unknown as new (s: ScanSurface, c: ScanConfigProvider) => Scanner,
+};
+const STRATEGY_LABELS: Record<StrategyId, string> = {
+  'row-column': 'Row–Column',
+  linear: 'Linear',
+  snake: 'Snake',
+  quadrant: 'Quadrant',
+};
+
+const CONTENT: Record<string, () => string[]> = {
+  Words: () => ['Hello', 'I want', 'Help', 'Yes', 'No', 'Please', 'Thank you', 'More', 'Stop', 'Go', 'Eat', 'Drink'],
+  Alphabet: () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split(''),
+  Numbers: () => Array.from({ length: 12 }, (_, i) => String(i + 1)),
+};
+
+/** Switches the broker grabs (see default-config.toml). `code` is the browser
+ * event.code used for the browser-only KeyboardAdapter fallback. */
+const SWITCHES: { id: string; key: string; code: string; role: Role }[] = [
+  { id: 'switch_1', key: 'Space', code: 'Space', role: 'select' },
+  { id: 'switch_2', key: 'Return', code: 'Enter', role: 'step' },
+  { id: 'switch_3', key: '← Left', code: 'ArrowLeft', role: 'reset' },
+  { id: 'switch_4', key: '→ Right', code: 'ArrowRight', role: 'cancel' },
+];
+
+const TAURI = (window as unknown as { __TAURI__?: { core?: { invoke: (cmd: string, args?: unknown) => Promise<unknown> } } }).__TAURI__;
+const inject = TAURI?.core?.invoke
+  ? (id: string, pressed: boolean) => TAURI.core.invoke('inject_switch', { switchId: id, pressed })
+  : null;
+
+class DemoApp {
+  private readonly host: HTMLElement;
+  private readonly cells: HTMLElement[] = [];
+  private items: string[] = CONTENT.Words();
+  private strategy: StrategyId = 'row-column';
+  private readonly config = mutableConfig(baseConfig(900));
+
+  private scanner: Scanner | null = null;
+  private engine!: GestureEngine;
+  private adapter: UsahpAdapter | null = null;
+  private keyboard: KeyboardAdapter | null = null;
+  private disconnectBridge: (() => void) | null = null;
+
+  constructor(host: HTMLElement) { this.host = host; }
+
+  mount() {
+    this.host.innerHTML = this.template();
+    this.bindControls();
+    this.buildScanner();
+    this.setupInput();
+  }
+
+  private template(): string {
+    return `
+      <header class="hd">
+        <h1>USAHP Switch Scanner</h1>
+        <div class="status" data-status>starting…</div>
+      </header>
+      <main class="mn">
+        <section class="preview">
+          <div class="grid" data-grid></div>
+          <dl class="state">
+            <div><dt>Highlight</dt><dd data-state="highlight">—</dd></div>
+            <div><dt>Output</dt><dd data-state="output" class="out"></dd></div>
+          </dl>
+        </section>
+        <aside class="panel">
+          <fieldset><legend>Content</legend>
+            <select data-ctrl="content">
+              ${Object.keys(CONTENT).map((k) => `<option value="${k}">${k}</option>`).join('')}
+            </select>
+          </fieldset>
+          <fieldset><legend>Scan order</legend>
+            <select data-ctrl="strategy">
+              ${(Object.keys(STRATEGY_LABELS) as StrategyId[]).map((id) => `<option value="${id}">${STRATEGY_LABELS[id]}</option>`).join('')}
+            </select>
+            <label class="row"><span>Pace</span><input type="range" min="200" max="2000" step="100" value="900" data-ctrl="rate"/><output data-out="rate">900</output></label>
+            <label class="row"><span>Input mode</span>
+              <select data-ctrl="mode"><option value="auto">Auto</option><option value="manual">Manual (step)</option></select>
+            </label>
+          </fieldset>
+          <fieldset><legend>Switches (routed through USAHP)</legend>
+            <div class="switches" data-switches></div>
+            <p class="hint">In Tauri these keys are grabbed by the broker; tap a button to inject the same way. Roles can be reassigned.</p>
+          </fieldset>
+        </aside>
+      </main>`;
+  }
+
+  private bindControls() {
+    this.host.addEventListener('change', (e) => {
+      const t = e.target as HTMLInputElement | HTMLSelectElement;
+      const ctrl = t.dataset.ctrl;
+      if (!ctrl) return;
+      if (ctrl === 'content') { this.items = CONTENT[t.value](); this.buildScanner(); }
+      else if (ctrl === 'strategy') { this.strategy = t.value as StrategyId; this.config.set({ scanPattern: this.strategy }); this.buildScanner(); }
+      else if (ctrl === 'mode') { this.config.set({ scanInputMode: t.value as ScanConfig['scanInputMode'] }); }
+    });
+    this.host.addEventListener('input', (e) => {
+      const t = e.target as HTMLInputElement;
+      if (t.dataset.ctrl === 'rate') {
+        const v = Number(t.value);
+        this.config.set({ scanRate: v });
+        const out = this.host.querySelector('[data-out="rate"]');
+        if (out) out.textContent = String(v);
+      }
+    });
+  }
+
+  private renderSwitchPanel() {
+    const root = this.host.querySelector('[data-switches]');
+    if (!root) return;
+    root.innerHTML = SWITCHES.map((s) => `
+      <div class="sw" data-id="${s.id}">
+        <span class="sw-key">${s.key}</span>
+        <select data-role="${s.id}">
+          ${(['select', 'step', 'reset', 'cancel'] as Role[]).map((r) => `<option value="${r}" ${r === s.role ? 'selected' : ''}>${r}</option>`).join('')}
+        </select>
+        <button data-inject="${s.id}">${s.id.replace('switch_', 'Sw ')}</button>
+      </div>`).join('');
+    root.querySelectorAll<HTMLSelectElement>('[data-role]').forEach((sel) => {
+      sel.addEventListener('change', () => {
+        const id = sel.dataset.role!;
+        SWITCHES.find((x) => x.id === id)!.role = sel.value as Role;
+        this.reconnectBindings();
+      });
+    });
+    // On-screen buttons: route through the broker (inject) in Tauri, else drive
+    // the engine directly so the browser fallback works.
+    root.querySelectorAll<HTMLButtonElement>('[data-inject]').forEach((btn) => {
+      const id = btn.dataset.inject!;
+      const down = (ev: Event) => { ev.preventDefault(); inject ? inject(id, true) : this.engine.press(id); };
+      const up = () => { inject ? inject(id, false) : this.engine.release(id); };
+      btn.addEventListener('pointerdown', down);
+      btn.addEventListener('pointerup', up);
+      btn.addEventListener('pointerleave', up);
+      btn.addEventListener('pointercancel', up);
+    });
+  }
+
+  private buildScanner() {
+    this.scanner?.stop();
+    const grid = this.host.querySelector('[data-grid]') as HTMLElement;
+    grid.innerHTML = '';
+    this.cells.length = 0;
+    for (const label of this.items) {
+      const cell = document.createElement('button');
+      cell.className = 'cell';
+      cell.textContent = label;
+      grid.appendChild(cell);
+      this.cells.push(cell);
+    }
+
+    const surface: ScanSurface = {
+      getItemsCount: () => this.cells.length,
+      getColumns: () => 4,
+      setFocus: (indices) => {
+        for (const c of this.cells) c.classList.remove('focus');
+        for (const i of indices) this.cells[i]?.classList.add('focus');
+        const hl = this.host.querySelector('[data-state="highlight"]');
+        if (hl) hl.textContent = indices.length ? indices.map((i) => this.items[i] ?? `#${i}`).join(', ') : '—';
+      },
+      setSelected: (index) => {
+        const c = this.cells[index];
+        if (!c) return;
+        c.classList.add('selected');
+        window.setTimeout(() => c.classList.remove('selected'), 250);
+        this.appendOutput(this.items[index] ?? '');
+      },
+    };
+
+    const Cls = STRATEGY_CLASSES[this.strategy];
+    this.scanner = new Cls(surface, this.config.provider);
+    this.scanner.start();
+  }
+
+  private setupInput() {
+    this.engine = new GestureEngine({ tapWindowMs: 250, holdThresholdMs: 1000 });
+    this.reconnectBindings();
+
+    // Browser fallback: drive the engine from the keyboard when there's no
+    // Tauri broker to grab keys.
+    if (!inject) {
+      const keyMap: Record<string, string> = {};
+      for (const s of SWITCHES) keyMap[s.code] = s.id;
+      this.keyboard = new KeyboardAdapter(window, this.engine, keyMap, { preventDefaultOnBound: true });
+    }
+
+    // USAHP adapter: in Tauri it connects to the embedded broker; in a browser
+    // it just retries (stays disconnected — harmless).
+    this.adapter = new UsahpAdapter(this.engine, {
+      onStatus: (st) => this.setStatus(`broker: ${st}`),
+      onSwitches: () => this.setStatus('broker: connected'),
+    });
+
+    this.renderSwitchPanel();
+    this.setStatus(inject ? 'Tauri — broker routing' : 'Browser — direct (no broker)');
+  }
+
+  private reconnectBindings() {
+    this.disconnectBridge?.();
+    const bindings: SwitchBindings = {};
+    for (const s of SWITCHES) bindings[s.id] = { press: s.role };
+    const proxy = { handleAction: (a: SwitchAction) => this.scanner?.handleAction(a) };
+    this.disconnectBridge = connectToScanner(this.engine, proxy, bindings);
+  }
+
+  private appendOutput(text: string) {
+    if (!text) return;
+    const el = this.host.querySelector('[data-state="output"]');
+    if (el) el.textContent = (el.textContent || '') + text + ' ';
+  }
+
+  private setStatus(text: string) {
+    const el = this.host.querySelector('[data-status]');
+    if (el) el.textContent = text;
+  }
+}
+
+function baseConfig(rate: number): ScanConfig {
+  return {
+    scanRate: rate,
+    scanInputMode: 'auto',
+    scanDirection: 'circular',
+    scanPattern: 'row-column',
+    scanTechnique: 'block',
+    scanMode: null,
+    continuousTechnique: 'crosshair',
+    compassMode: 'continuous',
+    eliminationSwitchCount: 4,
+    allowEmptyItems: false,
+    initialItemPause: 0,
+    scanLoops: 0,
+    criticalOverscan: { enabled: false, fastRate: 100, slowRate: 1000 },
+    colorCode: { errorRate: 0.1, selectThreshold: 0.95 },
+  };
+}
+
+function mutableConfig(initial: ScanConfig) {
+  let current = initial;
+  const provider: ScanConfigProvider = { get: () => current };
+  return { provider, set: (o: Partial<ScanConfig>) => { current = { ...current, ...o }; } };
+}
+
+const style = document.createElement('style');
+style.textContent = `
+  .hd { display:flex; justify-content:space-between; align-items:center; padding:12px 20px; background:#222; color:#fff; }
+  .hd h1 { font-size:1.1rem; margin:0; font-weight:600; }
+  .status { font-size:.8rem; opacity:.85; }
+  .mn { display:grid; grid-template-columns: 1fr 320px; gap:16px; padding:16px; }
+  .preview { background:#fff; border-radius:10px; padding:16px; }
+  .grid { display:grid; grid-template-columns: repeat(4, 1fr); gap:8px; min-height:300px; }
+  .cell { padding:18px 8px; font-size:1rem; background:#eef0f3; border:2px solid transparent; border-radius:8px; cursor:default; }
+  .cell.focus { border-color:#ff9800; background:#fff3e0; }
+  .cell.selected { background:#4caf50; color:#fff; }
+  .state { display:flex; gap:18px; margin-top:14px; font-size:.85rem; }
+  .state dt { color:#888; margin:0; }
+  .state dd { margin:2px 0 0; font-weight:600; }
+  .state .out { color:#2196f3; }
+  .panel { background:#fff; border-radius:10px; padding:12px; display:flex; flex-direction:column; gap:12px; }
+  .panel fieldset { border:1px solid #e0e0e0; border-radius:8px; padding:10px; }
+  .panel legend { font-size:.8rem; font-weight:600; color:#555; padding:0 4px; }
+  .panel select, .panel input[type=range] { width:100%; }
+  .row { display:flex; align-items:center; gap:8px; margin-top:8px; }
+  .row output { min-width:42px; text-align:right; font-size:.8rem; }
+  .switches { display:flex; flex-direction:column; gap:6px; }
+  .sw { display:grid; grid-template-columns: 64px 1fr auto; gap:8px; align-items:center; }
+  .sw-key { font-family:monospace; font-size:.75rem; background:#f0f0f0; padding:2px 6px; border-radius:4px; text-align:center; }
+  .sw button { padding:6px 10px; border:1px solid #ccc; border-radius:6px; background:#fafafa; cursor:pointer; }
+  .sw button:active { background:#ff9800; color:#fff; }
+  .hint { font-size:.72rem; color:#999; margin:.4em 0 0; line-height:1.3; }
+  @media (max-width: 800px) { .mn { grid-template-columns: 1fr; } }
+`;
+document.head.appendChild(style);
+
+new DemoApp(document.getElementById('app')!).mount();
