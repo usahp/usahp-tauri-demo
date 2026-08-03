@@ -94,6 +94,10 @@ class DemoApp {
   private disconnectBridge: (() => void) | null = null;
   private capturing = false;
   private overlay: ContinuousOverlay | null = null;
+  private dwell = new Map<string, { count: number; total: number; last: number }>();
+  private presses: number[] = [];
+  private lastEventAt = 0;
+  private statsTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(host: HTMLElement) { this.host = host; }
 
@@ -155,6 +159,7 @@ class DemoApp {
             <p class="hint">In Tauri these keys are grabbed by the broker; tap a button to inject the same way. Roles can be reassigned.</p>
           </fieldset>
           <fieldset><legend>Broker activity</legend>
+            <div class="stats" data-stats></div>
             <ul class="activity" data-activity></ul>
           </fieldset>
         </aside>
@@ -372,8 +377,10 @@ class DemoApp {
     }
 
     // Log switch activity flowing through the engine (broker-routed in Tauri).
-    this.engine.on('press', (e) => this.logActivity(e.switchId, 'press'));
-    this.engine.on('release', (e) => this.logActivity(e.switchId, 'release'));
+    this.engine.on('press', (e) => { this.logActivity(e.switchId, 'press'); this.recordPress(); });
+    this.engine.on('release', (e) => { this.logActivity(e.switchId, 'release'); this.recordDwell(e.switchId, e.durationMs); });
+    this.renderStats();
+    this.statsTimer = setInterval(() => this.renderStats(), 1000);
 
     this.renderSwitchPanel();
 
@@ -408,6 +415,41 @@ class DemoApp {
     li.className = `act act-${action}`;
     list.prepend(li);
     while (list.children.length > 8) list.removeChild(list.lastChild!);
+  }
+
+  private recordPress() {
+    const now = performance.now();
+    this.presses.push(now);
+    this.lastEventAt = now;
+    this.renderStats();
+  }
+
+  private recordDwell(id: string, ms: number) {
+    const d = this.dwell.get(id) ?? { count: 0, total: 0, last: 0 };
+    d.count += 1;
+    d.total += ms;
+    d.last = ms;
+    this.dwell.set(id, d);
+    this.lastEventAt = performance.now();
+    this.renderStats();
+  }
+
+  private renderStats() {
+    const el = this.host.querySelector('[data-stats]');
+    if (!el) return;
+    const now = performance.now();
+    this.presses = this.presses.filter((t) => now - t < 60_000);
+    const rate = this.presses.length; // presses in the last 60s ≈ /min
+    const ageS = this.lastEventAt ? (now - this.lastEventAt) / 1000 : -1;
+    const last = ageS < 0 ? '—' : ageS < 1 ? 'now' : `${Math.floor(ageS)}s ago`;
+    const rows = SWITCHES.map((s) => {
+      const d = this.dwell.get(s.id);
+      const label = s.id.replace('switch_', 'sw');
+      if (!d || d.count === 0) return `<span class="stat-mute">${label} —</span>`;
+      const avg = Math.round(d.total / d.count);
+      return `<span><b>${label}</b> ${avg}ms (${d.count})</span>`;
+    }).join(' · ');
+    el.innerHTML = `<div><b>${rate}</b>/min · last ${last}</div><div class="dwell">${rows}</div>`;
   }
 
   private reconnectBindings() {
@@ -497,6 +539,10 @@ style.textContent = `
   .activity li { padding:2px 0; color:#888; border-bottom:1px solid #f2f2f2; }
   .act-press { color:#2196f3; }
   .act-release { color:#999; }
+  .stats { font-size:.72rem; color:#666; margin-bottom:6px; line-height:1.5; }
+  .stats b { color:#2196f3; }
+  .stats .dwell { color:#888; }
+  .stat-mute { color:#ccc; }
   @media (max-width: 800px) { .mn { grid-template-columns: 1fr; } }
 `;
 document.head.appendChild(style);
