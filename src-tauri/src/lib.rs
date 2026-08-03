@@ -8,6 +8,7 @@
 #[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::{Emitter, Manager, State};
 use tokio::sync::mpsc;
 
@@ -29,6 +30,7 @@ enum OutputMode {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 enum CaptureHandle {
     Core(usahp_daemon::input::CaptureControl),
     #[cfg(target_os = "macos")]
@@ -71,6 +73,11 @@ struct AppState {
     capture: Option<CaptureHandle>,
     /// Output routing state.
     output: Arc<std::sync::Mutex<OutputMode>>,
+    /// Monitor client ID (set when the session monitor registers).
+    monitor_client_id: Arc<std::sync::Mutex<Option<u64>>>,
+    /// Active session ID (written by the monitor, read via the heartbeat task).
+    #[allow(dead_code)]
+    session_id: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 fn init_tracing() {
@@ -158,14 +165,53 @@ async fn inject_switch(
     } else {
         usahp_core::Action::Released
     };
+    let confidence = if pressed { Some(100.0) } else { Some(0.0) };
     state
         .broker
         .send(usahp_daemon::broker::BrokerCommand::Input(
             usahp_daemon::broker::PhysicalEvent {
                 mapping_id: switch_id,
                 action,
+                confidence,
             },
         ))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Claim a managed session (exclusive_foreground). Demonstrates heartbeat,
+/// escape hatch, and focus-driven revocation.
+#[tauri::command]
+async fn claim_session(state: State<'_, AppState>) -> Result<(), String> {
+    let client_id = state
+        .monitor_client_id
+        .lock()
+        .map_err(|e| e.to_string())?
+        .ok_or("monitor not registered")?;
+
+    state
+        .broker
+        .send(usahp_daemon::broker::BrokerCommand::Handshake {
+            client_id,
+            handshake: usahp_core::Handshake {
+                protocol_version: usahp_core::PROTOCOL_VERSION.into(),
+                app_id: "org.usahp.tauri-demo".into(),
+                requested_mode: usahp_core::RequestedMode::ExclusiveForeground,
+                pid: Some(std::process::id() as u32),
+            },
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Release the active managed session.
+#[tauri::command]
+async fn release_session(state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .broker
+        .send(usahp_daemon::broker::BrokerCommand::RevokeSession {
+            reason: usahp_core::SessionRevocationReason::ExplicitRevocation,
+        })
         .await
         .map_err(|e| e.to_string())
 }
@@ -195,7 +241,7 @@ pub fn run() {
             // broker::spawn and server::serve call tokio::spawn internally, so
             // they need a current runtime — block_on enters it and still lets
             // us return the broker handle synchronously.
-            let (broker, capture_control) = tauri::async_runtime::block_on(async {
+            let (broker, _capture_control) = tauri::async_runtime::block_on(async {
                 let capture = usahp_daemon::input::CaptureControl::new_enabled();
                 let broker = usahp_daemon::broker::spawn(config.mappings.clone(), capture.clone());
                 let server_broker = broker.clone();
@@ -220,14 +266,13 @@ pub fn run() {
                 (broker, capture)
             });
 
-            // OS-level switch capture is OFF by default (capture happens in the
-            // webview → inject_switch). Set USAHP_GRAB=1 for real system-wide
-            // capture: a native CGEventTap on macOS (rdev's grab traps in
-            // TextServices), or usahp's rdev/evdev on Linux/Windows. The flag
-            // returned here lets `set_capture` pause/resume the backend at runtime.
+            // OS-level switch capture is ON by default: a native CGEventTap
+            // on macOS (rdev's grab traps in TextServices), or usahp's
+            // rdev/evdev on Linux/Windows. Set USAHP_GRAB=0 to disable for
+            // webview-only inject mode during development.
             let capture: Option<CaptureHandle> = if std::env::var("USAHP_GRAB")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false)
+                .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+                .unwrap_or(true)
             {
                 // On macOS use the native CGEventTap (rdev's macOS grab traps in
                 // TextServices on the first key). Elsewhere use usahp's rdev/evdev.
@@ -240,9 +285,9 @@ pub fn run() {
                     match usahp_daemon::input::spawn(
                         &config.mappings,
                         broker.clone(),
-                        capture_control.clone(),
+                        _capture_control.clone(),
                     ) {
-                        Ok(()) => Some(CaptureHandle::Core(capture_control.clone())),
+                        Ok(()) => Some(CaptureHandle::Core(_capture_control.clone())),
                         Err(error) => {
                             tracing::error!(%error, "USAHP input backend failed to start");
                             None
@@ -251,11 +296,22 @@ pub fn run() {
                 }
             } else {
                 tracing::info!(
-                    "USAHP OS grab disabled (set USAHP_GRAB=1 to enable). Capture is via the \
+                    "USAHP OS grab disabled (USAHP_GRAB=0). Capture is via the \
                      webview → inject_switch."
                 );
                 None
             };
+
+            // macOS: watch frontmost application for focus-driven session
+            // revocation (Stage 2). No-op if no managed session is active.
+            #[cfg(target_os = "macos")]
+            usahp_daemon::focus_watcher::spawn(broker.clone());
+
+            // Shared state for session management.
+            let monitor_client_id: Arc<std::sync::Mutex<Option<u64>>> =
+                Arc::new(std::sync::Mutex::new(None));
+            let session_id: Arc<std::sync::Mutex<Option<String>>> =
+                Arc::new(std::sync::Mutex::new(None));
 
             // Session event monitor: register the backend as a broker client
             // and forward session lifecycle events (HandshakeResponse,
@@ -263,6 +319,8 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 let mon_broker = broker.clone();
                 let mon_win = window.clone();
+                let mon_cid = monitor_client_id.clone();
+                let mon_sid = session_id.clone();
                 tauri::async_runtime::spawn(async move {
                     let (tx, mut rx) =
                         tokio::sync::mpsc::channel::<std::sync::Arc<usahp_core::ServerMessage>>(16);
@@ -270,24 +328,112 @@ pub fn run() {
                     let _ = mon_broker
                         .send(usahp_daemon::broker::BrokerCommand::Register { sender: tx, reply })
                         .await;
-                    let _ = result.await;
+                    let client_id = result.await.unwrap_or(0);
+                    if let Ok(mut cid) = mon_cid.lock() {
+                        *cid = Some(client_id);
+                    }
                     // Drain hello (we don't need it for monitoring).
                     let _ = rx.recv().await;
+
+                    // Spawn heartbeat task: sends heartbeats while a session is active.
+                    let hb_broker = mon_broker.clone();
+                    let hb_cid = mon_cid.clone();
+                    let hb_sid = mon_sid.clone();
+                    let heartbeat = tokio::spawn(async move {
+                        let mut interval = tokio::time::interval(Duration::from_millis(500));
+                        interval.tick().await; // skip immediate
+                        loop {
+                            interval.tick().await;
+                            let (Some(cid), Some(sid)) = (
+                                hb_cid.lock().map(|g| *g).ok().flatten(),
+                                hb_sid.lock().map(|g| g.clone()).ok().flatten(),
+                            ) else {
+                                continue;
+                            };
+                            if hb_broker
+                                .send(usahp_daemon::broker::BrokerCommand::Heartbeat {
+                                    client_id: cid,
+                                    session_id: sid,
+                                })
+                                .await
+                                .is_err()
+                            {
+                                break; // broker closed — stop heartbeat
+                            }
+                        }
+                    });
+
                     while let Some(msg) = rx.recv().await {
                         match &*msg {
                             usahp_core::ServerMessage::HandshakeResponse(resp) => {
-                                let _ = mon_win
-                                    .emit("usahp-session-event", format!("Handshake: {:?}", resp));
+                                if let usahp_core::HandshakeResponse::Accepted {
+                                    session_id: sid, ..
+                                } = resp
+                                {
+                                    if let Ok(mut s) = mon_sid.lock() {
+                                        *s = Some(sid.clone());
+                                    }
+                                }
+                                let msg = match resp {
+                                    usahp_core::HandshakeResponse::Accepted { .. } => {
+                                        "Session claimed".to_string()
+                                    }
+                                    usahp_core::HandshakeResponse::Rejected { reason, .. } => {
+                                        format!("Handshake rejected: {reason:?}")
+                                    }
+                                };
+                                let _ = mon_win.emit("usahp-session-event", msg);
                             }
                             usahp_core::ServerMessage::SessionRevoked(rev) => {
-                                let _ = mon_win.emit(
-                                    "usahp-session-event",
-                                    format!("Session revoked: {:?}", rev.reason),
-                                );
+                                if let Ok(mut s) = mon_sid.lock() {
+                                    *s = None;
+                                }
+                                let reason = match rev.reason {
+                                    usahp_core::SessionRevocationReason::EscapeHatch => {
+                                        "Escape hatch — switch held > 4s"
+                                    }
+                                    usahp_core::SessionRevocationReason::FocusLost => {
+                                        "Focus lost — another app came to front"
+                                    }
+                                    usahp_core::SessionRevocationReason::HeartbeatTimeout => {
+                                        "Heartbeat timeout"
+                                    }
+                                    usahp_core::SessionRevocationReason::QueueOverflow => {
+                                        "Queue overflow"
+                                    }
+                                    usahp_core::SessionRevocationReason::ExplicitRevocation => {
+                                        "Released"
+                                    }
+                                };
+                                let _ = mon_win
+                                    .emit("usahp-session-event", format!("Session revoked: {reason}"));
+                            }
+                            usahp_core::ServerMessage::SwitchEvent(ev) => {
+                                // Only forward when we hold the session (exclusive
+                                // mode). In passive mode the UsahpAdapter already
+                                // receives these via WebSocket.
+                                let has_session = mon_sid
+                                    .lock()
+                                    .map(|g| g.is_some())
+                                    .unwrap_or(false);
+                                if has_session {
+                                    let _ = mon_win.emit(
+                                        "usahp-switch-event",
+                                        serde_json::json!({
+                                            "switch_id": ev.switch_id,
+                                            "action": match ev.action {
+                                                usahp_core::Action::Pressed => "pressed",
+                                                usahp_core::Action::Released => "released",
+                                            },
+                                        }),
+                                    );
+                                }
                             }
                             _ => {}
                         }
                     }
+                    // Monitor loop ended (broker channel closed) — stop heartbeat.
+                    heartbeat.abort();
                 });
             }
 
@@ -355,6 +501,8 @@ pub fn run() {
                 switches,
                 capture,
                 output,
+                monitor_client_id,
+                session_id,
             });
 
             // USAHP handoff (software, exclusive_foreground): the frontend drives
@@ -375,7 +523,9 @@ pub fn run() {
             usahp_status,
             inject_switch,
             set_capture,
-            set_output
+            set_output,
+            claim_session,
+            release_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

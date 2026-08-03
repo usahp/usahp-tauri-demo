@@ -68,6 +68,8 @@ const SWITCHES: { id: string; key: string; code: string; role: Role }[] = [
   { id: 'switch_2', key: 'Return', code: 'Enter', role: 'step' },
   { id: 'switch_3', key: '← Left', code: 'ArrowLeft', role: 'reset' },
   { id: 'switch_4', key: '→ Right', code: 'ArrowRight', role: 'cancel' },
+  { id: 'switch_5', key: 'Tab', code: 'Tab', role: 'select' },
+  { id: 'switch_6', key: 'A', code: 'KeyA', role: 'step' },
 ];
 
 const TAURI = (window as unknown as { __TAURI__?: { core?: { invoke: (cmd: string, args?: unknown) => Promise<unknown> } } }).__TAURI__;
@@ -210,7 +212,7 @@ class DemoApp {
           <dl class="mgr-grid">
             <div><dt>Heartbeat interval</dt><dd>500 ms</dd></div>
             <div><dt>Missed heartbeat limit</dt><dd>3 (1.5 s timeout)</dd></div>
-            <div><dt>Escape hold (Trigger A)</dt><dd>4000 ms <span class="mgr-future">(future)</span></dd></div>
+            <div><dt>Escape hold (Trigger A)</dt><dd>4000 ms</dd></div>
             <div><dt>Arbitration timeout</dt><dd>15 s <span class="mgr-future">(Stage 3)</span></dd></div>
           </dl>
         </section>
@@ -234,6 +236,12 @@ class DemoApp {
           <p class="mgr-hint" data-mgr-output-status hidden></p>
         </section>
         <section class="mgr-section">
+          <h3>Session</h3>
+          <div class="mgr-actions">
+            <button class="mgr-btn" data-mgr-claim>Claim session</button>
+            <button class="mgr-btn" data-mgr-release hidden>Release session</button>
+          </div>
+          <p class="mgr-hint">Claiming establishes a managed session (exclusive_foreground). The escape hatch fires if any switch is held > 4s. On macOS, focus loss revokes the session.</p>
           <h3>Session log</h3>
           <ul class="mgr-log" data-mgr-sessionlog></ul>
         </section>
@@ -343,11 +351,41 @@ class DemoApp {
     refreshBtn?.addEventListener('click', () => this.refreshManager());
     this.host.querySelector('[data-mgr-add]')?.addEventListener('click', () => {
       const nextNum = SWITCHES.length + 1;
-      if (nextNum > 8) return;
+      if (nextNum > 16) return;
       SWITCHES.push({ id: `switch_${nextNum}`, code: '', role: 'select', key: '' });
       this.renderSwitchEditor();
     });
     this.host.querySelector('[data-mgr-apply]')?.addEventListener('click', () => this.applySwitchEditor());
+
+    // Session claim/release
+    const claimBtn = this.host.querySelector('[data-mgr-claim]') as HTMLButtonElement | null;
+    const releaseBtn = this.host.querySelector('[data-mgr-release]') as HTMLButtonElement | null;
+    claimBtn?.addEventListener('click', async () => {
+      if (!tauriInvoke) return;
+      try {
+        await tauriInvoke('claim_session');
+      } catch (e) {
+        const log = this.host.querySelector('[data-mgr-sessionlog]');
+        if (log) {
+          const li = document.createElement('li');
+          li.textContent = `${new Date().toLocaleTimeString()} — Claim failed: ${e}`;
+          log.prepend(li);
+        }
+      }
+    });
+    releaseBtn?.addEventListener('click', async () => {
+      if (!tauriInvoke) return;
+      try {
+        await tauriInvoke('release_session');
+      } catch (e) {
+        const log = this.host.querySelector('[data-mgr-sessionlog]');
+        if (log) {
+          const li = document.createElement('li');
+          li.textContent = `${new Date().toLocaleTimeString()} — Release failed: ${e}`;
+          log.prepend(li);
+        }
+      }
+    });
   }
 
   private async refreshManager() {
@@ -446,7 +484,7 @@ class DemoApp {
       <tr data-row="${i}">
         <td>
           <select data-field="id" class="mgr-input">
-            ${Array.from({length: 8}, (_, n) => `switch_${n + 1}`).map(id =>
+            ${Array.from({length: 16}, (_, n) => `switch_${n + 1}`).map(id =>
               `<option value="${id}" ${id === s.id ? 'selected' : ''}>${id}</option>`
             ).join('')}
           </select>
@@ -674,6 +712,13 @@ class DemoApp {
           this.focused = true;
           this.paused = false;
           this.updateCapture();
+        } else {
+          const ind = this.host.querySelector('[data-capture-state]') as HTMLElement | null;
+          if (ind) {
+            ind.hidden = false;
+            ind.textContent = '○ Inject mode';
+            ind.style.color = '#2196f3';
+          }
         }
       });
       const tauriListen = (window as unknown as {
@@ -685,15 +730,38 @@ class DemoApp {
       // Listen for session lifecycle events from the backend monitor.
     if (tauriListen) {
       tauriListen('usahp-session-event', (e) => {
+        const payload = String(e.payload);
         const log = this.host.querySelector('[data-mgr-sessionlog]');
-        if (!log) return;
-        const li = document.createElement('li');
-        const t = new Date().toLocaleTimeString();
-        li.textContent = `${t} — ${e.payload}`;
-        log.prepend(li);
-        while (log.children.length > 20) log.removeChild(log.lastChild!);
+        if (log) {
+          const li = document.createElement('li');
+          const t = new Date().toLocaleTimeString();
+          li.textContent = `${t} — ${payload}`;
+          log.prepend(li);
+          while (log.children.length > 20) log.removeChild(log.lastChild!);
+        }
+        // Toggle Claim/Release buttons based on session state.
+        const claimBtn = this.host.querySelector('[data-mgr-claim]') as HTMLButtonElement | null;
+        const releaseBtn = this.host.querySelector('[data-mgr-release]') as HTMLButtonElement | null;
+        if (payload.includes('claimed') || payload.includes('Accepted')) {
+          if (claimBtn) claimBtn.hidden = true;
+          if (releaseBtn) releaseBtn.hidden = false;
+        } else if (payload.includes('revoked') || payload.includes('Released')) {
+          if (claimBtn) claimBtn.hidden = false;
+          if (releaseBtn) releaseBtn.hidden = true;
+        }
       });
     }
+
+      // When a managed session is active, the monitor forwards switch events
+      // via Tauri (the UsahpAdapter's WebSocket stops receiving in exclusive
+      // mode). Feed them to the engine directly.
+      if (tauriListen) {
+        tauriListen('usahp-switch-event', (e) => {
+          const { switch_id, action } = e.payload as { switch_id: string; action: string };
+          if (action === 'pressed') this.engine.press(switch_id, 'usahp');
+          else if (action === 'released') this.engine.release(switch_id, 'usahp');
+        });
+      }
 
     const capBtn = this.host.querySelector('[data-capture]') as HTMLButtonElement | null;
       capBtn?.addEventListener('click', () => { this.paused = !this.paused; this.updateCapture(); });

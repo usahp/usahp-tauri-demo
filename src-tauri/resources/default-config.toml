@@ -35,3 +35,15 @@ switch_id = "switch_4"
 input = "keyboard"
 code = "RightArrow"
 
+[[mappings]]
+id = "switch_5"
+switch_id = "switch_5"
+input = "keyboard"
+code = "Tab"
+
+[[mappings]]
+id = "switch_6"
+switch_id = "switch_6"
+input = "keyboard"
+code = "A"
+

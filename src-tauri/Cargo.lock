@@ -4503,7 +4503,7 @@ dependencies = [
 [[package]]
 name = "usahp-core"
 version = "0.1.0"
-source = "git+https://github.com/usahp/usahp-core.git?rev=3636e3c507ef08044cc5cff8f872a9f2a67fe0d9#3636e3c507ef08044cc5cff8f872a9f2a67fe0d9"
+source = "git+https://github.com/usahp/usahp-core.git?rev=70edcfb003f43e50674c8e3d456971ed168d2585#70edcfb003f43e50674c8e3d456971ed168d2585"
 dependencies = [
  "serde",
  "thiserror 2.0.19",
@@ -4513,7 +4513,7 @@ dependencies = [
 [[package]]
 name = "usahp-daemon"
 version = "0.1.0"
-source = "git+https://github.com/usahp/usahp-core.git?rev=3636e3c507ef08044cc5cff8f872a9f2a67fe0d9#3636e3c507ef08044cc5cff8f872a9f2a67fe0d9"
+source = "git+https://github.com/usahp/usahp-core.git?rev=70edcfb003f43e50674c8e3d456971ed168d2585#70edcfb003f43e50674c8e3d456971ed168d2585"
 dependencies = [
  "anyhow",
  "clap",
