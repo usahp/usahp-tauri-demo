@@ -15,6 +15,23 @@ mod macos_capture;
 
 const EMBEDDED_CONFIG: &str = include_str!("../resources/default-config.toml");
 
+/// Output routing mode.
+#[derive(Debug, Clone, PartialEq)]
+enum OutputMode {
+    Disabled,
+    /// switch_id → macOS/win keycode
+    Keystroke(std::collections::HashMap<String, u16>),
+    /// Grid 3 native protocol (Windows SendNotifyMessageA, up to 8 switches).
+    /// switch_N → Grid switch N (automatic).
+    Grid3,
+}
+
+impl Default for OutputMode {
+    fn default() -> Self {
+        Self::Disabled
+    }
+}
+
 /// Handle on the running broker so (later) commands can inject events.
 struct AppState {
     #[allow(dead_code)]
@@ -23,8 +40,8 @@ struct AppState {
     switches: Vec<String>,
     /// Set when the macOS CGEventTap is installed; clear it to release capture.
     capture_flag: Option<Arc<AtomicBool>>,
-    /// Output routing: switch_id → keycode mapping, active when non-empty.
-    output_mapping: Arc<std::sync::Mutex<Option<std::collections::HashMap<String, u16>>>>,
+    /// Output routing state.
+    output: Arc<std::sync::Mutex<OutputMode>>,
 }
 
 fn init_tracing() {
@@ -39,7 +56,12 @@ fn init_tracing() {
 /// Frontend-facing snapshot of the embedded broker.
 #[tauri::command]
 fn usahp_status(state: State<'_, AppState>) -> serde_json::Value {
-    let output_active = state.output_mapping.lock().map(|m| m.is_some()).unwrap_or(false);
+    let output_active = state.output.lock().map(|m| !matches!(*m, OutputMode::Disabled)).unwrap_or(false);
+    let output_mode = state.output.lock().map(|m| match &*m {
+        OutputMode::Disabled => "disabled",
+        OutputMode::Keystroke(_) => "keystroke",
+        OutputMode::Grid3 => "grid3",
+    }).unwrap_or("disabled");
     serde_json::json!({
         "running": true,
         "port": state.port,
@@ -51,6 +73,7 @@ fn usahp_status(state: State<'_, AppState>) -> serde_json::Value {
             .map(|f| f.load(Ordering::Relaxed))
             .unwrap_or(false),
         "output_active": output_active,
+        "output_mode": output_mode,
     })
 }
 
@@ -68,14 +91,22 @@ fn set_capture(state: State<'_, AppState>, enabled: bool) {
     }
 }
 
-/// Configure output routing: when enabled, the broker's switch events are
-/// translated to OS-level keystrokes so external apps (Grid 3, games) can
-/// receive them. The mapping is switch_id → macOS keycode.
+/// Configure output routing: translate broker switch events to external apps.
+/// Modes: "keystroke" (OS keystrokes, cross-platform), "grid3" (Grid 3 native
+/// Windows protocol, up to 8 switches), "disabled".
 #[tauri::command]
-fn set_output(state: State<'_, AppState>, mapping: Option<std::collections::HashMap<String, u16>>) {
-    if let Ok(mut m) = state.output_mapping.lock() {
-        *m = mapping;
-        tracing::info!("output routing {}", if m.is_some() { "enabled" } else { "disabled" });
+fn set_output(
+    state: State<'_, AppState>,
+    mode: String,
+    mapping: Option<std::collections::HashMap<String, u16>>,
+) {
+    if let Ok(mut out) = state.output.lock() {
+        *out = match mode.as_str() {
+            "keystroke" => OutputMode::Keystroke(mapping.unwrap_or_default()),
+            "grid3" => OutputMode::Grid3,
+            _ => OutputMode::Disabled,
+        };
+        tracing::info!("output routing: {:?}", *out);
     }
 }
 
@@ -219,10 +250,9 @@ pub fn run() {
 
             // Output routing: a second broker client that translates switch_events
             // to OS-level keystrokes when output mapping is active.
-            let output_mapping: Arc<std::sync::Mutex<Option<std::collections::HashMap<String, u16>>>> =
-                Arc::new(std::sync::Mutex::new(None));
+            let output: Arc<std::sync::Mutex<OutputMode>> = Arc::new(std::sync::Mutex::new(OutputMode::Disabled));
             let out_broker = broker.clone();
-            let out_mapping = output_mapping.clone();
+            let out_state = output.clone();
             tauri::async_runtime::spawn(async move {
                 let (tx, mut rx) = tokio::sync::mpsc::channel::<std::sync::Arc<usahp_core::ServerMessage>>(16);
                 let (reply, result) = tokio::sync::oneshot::channel();
@@ -233,18 +263,30 @@ pub fn run() {
                 let _ = rx.recv().await; // hello
                 while let Some(msg) = rx.recv().await {
                     if let usahp_core::ServerMessage::SwitchEvent(ev) = &*msg {
-                        let map = out_mapping.lock().ok();
-                        if let Some(Some(map)) = map.as_deref() {
-                            if let Some(&keycode) = map.get(&ev.switch_id) {
-                                let is_press = ev.action == usahp_core::Action::Pressed;
-                                #[cfg(target_os = "macos")]
-                                {
-                                    macos_capture::post_keystroke(keycode, is_press);
+                        let is_press = ev.action == usahp_core::Action::Pressed;
+                        let mode = out_state.lock().ok();
+                        if let Some(mode) = mode.as_deref() {
+                            match mode {
+                                OutputMode::Keystroke(map) => {
+                                    if let Some(&keycode) = map.get(&ev.switch_id) {
+                                        #[cfg(target_os = "macos")]
+                                        { macos_capture::post_keystroke(keycode, is_press); }
+                                        #[cfg(not(target_os = "macos"))]
+                                        { tracing::warn!("keystroke output not yet on this platform"); }
+                                    }
                                 }
-                                #[cfg(not(target_os = "macos"))]
-                                {
-                                    tracing::warn!("keystroke output not yet implemented on this platform");
+                                OutputMode::Grid3 => {
+                                    // switch_N → Grid switch N.
+                                    if let Some(n) = ev.switch_id.strip_prefix("switch_") {
+                                        if let Ok(switch_num) = n.parse::<u32>() {
+                                            #[cfg(target_os = "windows")]
+                                            { grid3_send(switch_num, is_press); }
+                                            #[cfg(not(target_os = "windows"))]
+                                            { let _ = switch_num; tracing::warn!("Grid 3 output is Windows-only"); }
+                                        }
+                                    }
                                 }
+                                OutputMode::Disabled => {}
                             }
                         }
                     }
@@ -256,7 +298,7 @@ pub fn run() {
                 port,
                 switches,
                 capture_flag,
-                output_mapping,
+                output,
             });
 
             // USAHP handoff (software, exclusive_foreground): the frontend drives
@@ -276,4 +318,32 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![usahp_status, inject_switch, set_capture, set_output])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Send a Grid 3 switch event via the Windows `Sensory_SwitchInput` protocol.
+/// Grid 3 registers a custom window message and listens for
+/// `SendNotifyMessageA(HWND_BROADCAST, msg, switch_num, press_flag)` where
+/// `press_flag` is 1 for press, 0 for release.
+#[cfg(target_os = "windows")]
+fn grid3_send(switch_num: u32, press: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        RegisterWindowMessageA, SendNotifyMessageA, HWND_BROADCAST,
+    };
+    use windows::core::PCSTR;
+    use std::sync::OnceLock;
+
+    static MSG: OnceLock<u32> = OnceLock::new();
+    let msg = *MSG.get_or_init(|| {
+        unsafe {
+            RegisterWindowMessageA(PCSTR(b"Sensory_SwitchInput\0".as_ptr())).0 as u32
+        }
+    });
+    unsafe {
+        SendNotifyMessageA(
+            HWND_BROADCAST,
+            msg,
+            WPARAM(switch_num as usize),
+            LPARAM(if press { 1 } else { 0 }),
+        );
+    }
 }

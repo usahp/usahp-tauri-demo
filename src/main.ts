@@ -216,15 +216,22 @@ class DemoApp {
         </section>
         <section class="mgr-section">
           <h3>Output routing</h3>
-          <p class="mgr-hint">Translate broker events to OS keystrokes so external apps (Grid 3, games) can receive them.</p>
-          <table class="mgr-table">
-            <thead><tr><th>Switch</th><th>Output key (click to register)</th><th>Key code</th></tr></thead>
+          <p class="mgr-hint">Translate broker events to external apps. Grid 3 maps switch_1→Grid switch 1 (up to 8, Windows only). Keystroke lets you register a key per switch (any app that reads keyboard).</p>
+          <label class="row"><span>Mode</span>
+            <select data-mgr-output-mode>
+              <option value="disabled">Disabled</option>
+              <option value="keystroke">Keystroke</option>
+              <option value="grid3">Grid 3 (Windows)</option>
+            </select>
+          </label>
+          <table class="mgr-table" data-mgr-output-table>
+            <thead><tr><th>Switch</th><th>Output key</th><th></th></tr></thead>
             <tbody data-mgr-output-rows></tbody>
           </table>
           <div class="mgr-actions">
-            <button class="mgr-btn mgr-apply" data-mgr-output-enable>Enable output</button>
-            <button class="mgr-btn" data-mgr-output-disable hidden>Disable output</button>
+            <button class="mgr-btn mgr-apply" data-mgr-output-apply>Apply</button>
           </div>
+          <p class="mgr-hint" data-mgr-output-status hidden></p>
         </section>
         <section class="mgr-section">
           <h3>Session log</h3>
@@ -363,52 +370,72 @@ class DemoApp {
 
   private renderOutputRouting() {
     const tbody = this.host.querySelector('[data-mgr-output-rows]');
-    if (!tbody) return;
-    tbody.innerHTML = SWITCHES.map((s) => `
-      <tr>
-        <td>${s.id}</td>
-        <td><input class="mgr-input mgr-key" data-output-key="${s.id}" placeholder="click, then press a key"/></td>
-        <td><span data-output-code="${s.id}" class="mgr-keycode">—</span></td>
-      </tr>`).join('');
-    // Key registration per row
-    tbody.querySelectorAll<HTMLInputElement>('.mgr-key').forEach((input) => {
-      input.addEventListener('keydown', (e) => {
-        e.preventDefault();
-        input.value = e.key.length === 1 ? e.key.toUpperCase() : e.key;
-        const codeSpan = this.host.querySelector(`[data-output-code="${input.dataset.outputKey}"]`);
-        if (codeSpan) codeSpan.textContent = String(e.keyCode || e.which);
-        input.blur();
+    const modeSel = this.host.querySelector('[data-mgr-output-mode]') as HTMLSelectElement | null;
+    if (!tbody || !modeSel) return;
+
+    const renderRows = (mode: string) => {
+      if (mode === 'grid3') {
+        tbody.innerHTML = SWITCHES.slice(0, 8).map((s, i) => `
+          <tr><td>${s.id}</td><td>Grid switch ${i + 1}</td><td></td></tr>`).join('');
+        return;
+      }
+      if (mode === 'keystroke') {
+        tbody.innerHTML = SWITCHES.map((s) => `
+          <tr>
+            <td>${s.id}</td>
+            <td><input class="mgr-input mgr-key" data-output-key="${s.id}" placeholder="click, then press a key"/></td>
+            <td><button class="mgr-x" data-output-clear="${s.id}">✕</button></td>
+          </tr>`).join('');
+        tbody.querySelectorAll<HTMLInputElement>('.mgr-key').forEach((input) => {
+          input.addEventListener('keydown', (e) => {
+            e.preventDefault();
+            input.value = e.key.length === 1 ? e.key.toUpperCase() : e.key;
+            input.dataset.keyCode = String(e.keyCode || e.which);
+            input.blur();
+          });
+        });
+        tbody.querySelectorAll('[data-output-clear]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const id = (btn as HTMLElement).dataset.outputClear!;
+            const input = this.host.querySelector(`[data-output-key="${id}"]`) as HTMLInputElement | null;
+            if (input) { input.value = ''; delete input.dataset.keyCode; }
+          });
+        });
+        return;
+      }
+      tbody.innerHTML = '<tr><td colspan="3" style="color:#999;text-align:center;padding:12px">Select a mode</td></tr>';
+    };
+
+    renderRows(modeSel.value);
+    modeSel.addEventListener('change', () => renderRows(modeSel.value));
+
+    const applyBtn = this.host.querySelector('[data-mgr-output-apply]');
+    applyBtn?.addEventListener('click', async () => {
+      const mode = modeSel.value;
+      const statusEl = this.host.querySelector('[data-mgr-output-status]') as HTMLElement | null;
+      if (mode === 'disabled') {
+        if (tauriInvoke) await tauriInvoke('set_output', { mode: 'disabled', mapping: null });
+        if (statusEl) { statusEl.hidden = false; statusEl.textContent = 'Output disabled.'; }
+        return;
+      }
+      if (mode === 'grid3') {
+        if (tauriInvoke) await tauriInvoke('set_output', { mode: 'grid3', mapping: null });
+        if (statusEl) { statusEl.hidden = false; statusEl.textContent = 'Grid 3 output enabled (Windows only). switch_1→Grid 1, switch_2→Grid 2, etc.'; }
+        return;
+      }
+      // keystroke mode — collect registered keys
+      const mapping: Record<string, number> = {};
+      this.host.querySelectorAll<HTMLInputElement>('[data-output-key]').forEach((input) => {
+        const code = parseInt(input.dataset.keyCode || '0', 10);
+        if (code > 0) mapping[input.dataset.outputKey!] = code;
       });
+      if (Object.keys(mapping).length === 0) {
+        if (statusEl) { statusEl.hidden = false; statusEl.textContent = 'No keys registered — click a cell and press a key first.'; }
+        return;
+      }
+      if (tauriInvoke) await tauriInvoke('set_output', { mode: 'keystroke', mapping });
+      if (statusEl) { statusEl.hidden = false; statusEl.textContent = `Keystroke output enabled (${Object.keys(mapping).length} switches mapped).`; }
     });
-    // Enable button
-    this.host.querySelector('[data-mgr-output-enable]')?.addEventListener('click', () => this.enableOutput());
-    this.host.querySelector('[data-mgr-output-disable]')?.addEventListener('click', () => this.disableOutput());
-  }
-
-  private async enableOutput() {
-    if (!tauriInvoke) return;
-    const mapping: Record<string, number> = {};
-    this.host.querySelectorAll<HTMLInputElement>('[data-output-key]').forEach((input) => {
-      const codeSpan = this.host.querySelector(`[data-output-code="${input.dataset.outputKey}"]`);
-      const code = parseInt(codeSpan?.textContent || '0', 10);
-      if (code > 0) mapping[input.dataset.outputKey!] = code;
-    });
-    if (Object.keys(mapping).length === 0) {
-      this.setStatus('output: no keys registered — click a cell and press a key first');
-      return;
-    }
-    await tauriInvoke('set_output', { mapping });
-    this.host.querySelector('[data-mgr-output-enable]')?.setAttribute('hidden', '');
-    this.host.querySelector('[data-mgr-output-disable]')?.removeAttribute('hidden');
-    this.setStatus(`output routing enabled (${Object.keys(mapping).length} switches)`);
-  }
-
-  private async disableOutput() {
-    if (!tauriInvoke) return;
-    await tauriInvoke('set_output', { mapping: null });
-    this.host.querySelector('[data-mgr-output-disable]')?.setAttribute('hidden', '');
-    this.host.querySelector('[data-mgr-output-enable]')?.removeAttribute('hidden');
-    this.setStatus('output routing disabled');
   }
 
   private renderSwitchEditor() {
