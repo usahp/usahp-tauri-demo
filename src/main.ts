@@ -107,6 +107,7 @@ class DemoApp {
   mount() {
     this.host.innerHTML = this.template();
     this.bindControls();
+    this.bindTabs();
     this.buildScanner();
     this.setupInput();
   }
@@ -121,7 +122,11 @@ class DemoApp {
           <div class="status" data-status>starting…</div>
         </div>
       </header>
-      <main class="mn">
+      <nav class="tabs">
+        <button class="tab active" data-tab="scanner">Scanner</button>
+        <button class="tab" data-tab="manager">USAHP Manager</button>
+      </nav>
+      <main class="mn" data-tabpanel="scanner">
         <section class="preview">
           <div class="grid" data-grid></div>
           <dl class="state">
@@ -177,6 +182,26 @@ class DemoApp {
             <ul class="activity" data-activity></ul>
           </fieldset>
         </aside>
+      </main>
+      <main class="mn manager" data-tabpanel="manager" hidden>
+        <section class="mgr-section">
+          <h3>Daemon status</h3>
+          <dl class="mgr-grid">
+            <div><dt>Running</dt><dd data-mgr="running">—</dd></div>
+            <div><dt>Port</dt><dd data-mgr="port">—</dd></div>
+            <div><dt>Capture</dt><dd data-mgr="capture">—</dd></div>
+            <div><dt>Switches</dt><dd data-mgr="switches">—</dd></div>
+          </dl>
+          <button class="mgr-refresh" data-mgr-refresh>Refresh</button>
+        </section>
+        <section class="mgr-section">
+          <h3>Switch mappings</h3>
+          <table class="mgr-table" data-mgr-mappings></table>
+        </section>
+        <section class="mgr-section">
+          <h3>Session log</h3>
+          <ul class="mgr-log" data-mgr-sessionlog></ul>
+        </section>
       </main>`;
   }
 
@@ -265,6 +290,47 @@ class DemoApp {
       btn.addEventListener('pointerleave', up);
       btn.addEventListener('pointercancel', up);
     });
+  }
+
+  private bindTabs() {
+    const tabs = this.host.querySelectorAll('[data-tab]');
+    tabs.forEach((tab) => {
+      tab.addEventListener('click', () => {
+        const target = (tab as HTMLElement).dataset.tab!;
+        tabs.forEach((t) => t.classList.toggle('active', t === tab));
+        this.host.querySelectorAll('[data-tabpanel]').forEach((panel) => {
+          (panel as HTMLElement).hidden = (panel as HTMLElement).dataset.tabpanel !== target;
+        });
+        if (target === 'manager') this.refreshManager();
+      });
+    });
+    const refreshBtn = this.host.querySelector('[data-mgr-refresh]');
+    refreshBtn?.addEventListener('click', () => this.refreshManager());
+  }
+
+  private async refreshManager() {
+    if (!tauriInvoke) return;
+    const st = (await tauriInvoke('usahp_status')) as {
+      running?: boolean; port?: number; switches?: string[];
+      capture_installed?: boolean; capturing?: boolean;
+    };
+    const set = (key: string, val: string) => {
+      const el = this.host.querySelector(`[data-mgr="${key}"]`);
+      if (el) el.textContent = val;
+    };
+    set('running', st.running ? 'Yes' : 'No');
+    set('port', String(st.port ?? 7312));
+    set('capture', st.capture_installed ? (st.capturing ? '● Active' : '⏸ Paused') : 'Webview');
+    set('switches', (st.switches ?? []).join(', ') || '—');
+    const table = this.host.querySelector('[data-mgr-mappings]');
+    if (table) {
+      const sw = st.switches ?? [];
+      table.innerHTML = `<tr><th>Switch</th><th>Key</th></tr>` +
+        sw.map((id) => {
+          const sw = SWITCHES.find((s) => s.id === id);
+          return `<tr><td>${id}</td><td>${sw?.key ?? '—'}</td></tr>`;
+        }).join('');
+    }
   }
 
   private applyModeConfig() {
@@ -577,6 +643,23 @@ function mutableConfig(initial: ScanConfig) {
 const style = document.createElement('style');
 style.textContent = `
   [hidden] { display: none !important; }
+  .tabs { display:flex; gap:0; background:#222; padding:0 16px; }
+  .tab { padding:8px 20px; border:none; background:transparent; color:#999; font-size:.9rem; cursor:pointer; border-bottom:2px solid transparent; }
+  .tab.active { color:#fff; border-bottom-color:#16845b; }
+  .tab:hover { color:#ccc; }
+  .manager { display:flex; flex-direction:column; gap:20px; padding:20px; background:#fff; border-radius:0 0 10px 10px; }
+  .mgr-section { border:1px solid #eee; border-radius:8px; padding:16px; }
+  .mgr-section h3 { margin:0 0 12px; font-size:1rem; }
+  .mgr-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:12px; margin:0; }
+  .mgr-grid dt { font-size:.75rem; color:#888; }
+  .mgr-grid dd { margin:2px 0 0; font-weight:600; font-size:.9rem; }
+  .mgr-table { width:100%; border-collapse:collapse; font-size:.85rem; }
+  .mgr-table th, .mgr-table td { text-align:left; padding:6px 10px; border-bottom:1px solid #eee; }
+  .mgr-table th { color:#888; font-weight:600; }
+  .mgr-refresh { margin-top:12px; padding:6px 16px; border:1px solid #16845b; border-radius:6px; background:#16845b; color:#fff; cursor:pointer; font-size:.85rem; }
+  .mgr-refresh:hover { background:#0f6b47; }
+  .mgr-log { list-style:none; margin:0; padding:0; max-height:200px; overflow:auto; font-family:monospace; font-size:.75rem; }
+  .mgr-log li { padding:3px 0; color:#666; border-bottom:1px solid #f5f5f5; }
   .hd { display:flex; justify-content:space-between; align-items:center; padding:12px 20px; background:#222; color:#fff; }
   .hd h1 { font-size:1.1rem; margin:0; font-weight:600; }
   .hd-right { display:flex; align-items:center; gap:10px; }
